@@ -22,7 +22,7 @@ TICKERS = {
 # Daten abholen + Interpretation + Ampel-Farbe
 # =========================
 def get_market_data():
-    results, prices = [], {}
+    results, prices = [], []
 
     for name, sym in TICKERS.items():
         try:
@@ -33,78 +33,29 @@ def get_market_data():
 
             p, prev = h['Close'].iloc[-1], h['Close'].iloc[-2]
             chg = ((p - prev) / prev) * 100
-            prices[name] = p
+            prices.append((name, p))
 
             is_fx = "EURUSD" in sym
             is_copper = "HG=F" in sym
             is_oil = "CL=F" in sym
 
-            # RVOL & Ampel
+            # RVOL berechnen, nur wenn sinnvoll
             rv_str = "N/A"
-            al = "success"
-
-            # Aktien / Indizes RVOL
+            rvol = 0
             if not is_fx and not is_copper and not is_oil:
                 h_v = t.history(period="1mo")
                 cv, av = h_v['Volume'].iloc[-1], h_v['Volume'].iloc[-12:-2].mean()
                 if cv == 0 or (av > 0 and cv/av > 50):
                     cv = h_v['Volume'].iloc[-2]
-                rv = cv / av if av > 0 else 0
-                rv_str = f"{rv:.2f}"
-                al = "danger" if rv > 3.0 else "success"
+                rvol = cv / av if av > 0 else 0
+                rv_str = f"{rvol:.2f}"
 
-            # Shortcut 2 Ampel für Öl
-            if is_oil:
+            # Ampel-Logik
+            al = "success"
+            if not is_fx and not is_copper and not is_oil and rvol > 3.0:
+                al = "danger"
+
+            # Shortcut 2 Ampel für Öl & Kupfer
+            if is_oil or is_copper:
                 if chg > 2:
-                    al = "danger"
-                elif chg > 0.5:
-                    al = "warning"
-                else:
-                    al = "success"
-                rv_str = "N/A"
-
-            # Shortcut 2 Ampel für Kupfer
-            if is_copper:
-                if chg > 2:
-                    al = "danger"
-                elif chg > 0.5:
-                    al = "warning"
-                else:
-                    al = "success"
-                rv_str = "N/A"
-
-            # =========================
-            # Automatische Interpretation
-            # =========================
-            if is_copper or is_oil:
-                if al == "danger":
-                    interp = "stark auffällig"
-                elif al == "warning":
-                    interp = "leicht auffällig"
-                else:
-                    interp = "normal"
-            else:  # Aktien / Indizes / Futures
-                if chg > 2:
-                    interp = "starker Anstieg"
-                elif chg > 0.5:
-                    interp = "leichter Anstieg"
-                elif chg < -2:
-                    interp = "starker Rückgang"
-                elif chg < -0.5:
-                    interp = "leichter Rückgang"
-                else:
-                    interp = "neutral"
-
-            # =========================
-            # Ampel-Farbe für echtes Icon
-            # =========================
-            if al == "danger":
-                al_color = "red"
-            elif al == "warning":
-                al_color = "yellow"
-            else:
-                al_color = "green"
-
-            results.append({
-                "name": name,
-                "p": f"{p:.4f}" if is_fx else f"{p
+                    al =
