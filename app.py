@@ -1,6 +1,5 @@
 from flask import Flask, render_template_string
 import yfinance as yf
-import pandas as pd
 
 app = Flask(__name__)
 
@@ -64,7 +63,6 @@ def get_market_data():
 
             # Indices Ampel / Interpretation
             if is_index:
-                ma5 = h['Close'].iloc[-5:].mean()
                 if chg>2: al="success" if chg>0 else "danger"; interp_chg="starker Anstieg" if chg>0 else "starker Rückgang"
                 elif chg>0.5: al="success" if chg>0 else "warning"; interp_chg="leichter Anstieg" if chg>0 else "leichter Rückgang"
                 else: al="success" if chg>0 else "warning"; interp_chg="neutral"
@@ -113,39 +111,30 @@ def get_market_data():
         ratio = None; ratio_chg = None; ratio_al="success"
 
     # =========================
-    # Shortcut 2 Simulation
+    # Öl Analyse Panel
     # =========================
     try:
-        # Öl-Volumenvergleich
-        oil = yf.Ticker("CL=F").history(period="5d")
-        oil_vol = int(oil['Volume'].iloc[-1]) if not oil.empty else None
-        oil_vol_ref = int(oil['Volume'].iloc[-2]) if len(oil)>=2 else None
-        oil_signal = "Grün" if oil_vol and oil_vol_ref and oil_vol>oil_vol_ref else "Rot"
+        oil = yf.Ticker("CL=F").history(period="2d")
+        oil_vol = int(oil['Volume'].iloc[-1]) if len(oil)>=1 else None
+        oil_vol_prev = int(oil['Volume'].iloc[-2]) if len(oil)>=2 else None
 
-        # S&P 500 Futures
-        sp = yf.Ticker("^GSPC").history(period="2d")
-        sp_chg = ((sp['Close'].iloc[-1]-sp['Close'].iloc[-2])/sp['Close'].iloc[-2]*100) if len(sp)>=2 else None
-
-        # Dummy Insider Flow
-        insider_flow = "neutral"
-
-        # Shortcut 2 Ampel
-        if oil_signal=="Rot" or (sp_chg and sp_chg<-1): shortcut_al="danger"
-        elif sp_chg and abs(sp_chg)<0.3: shortcut_al="warning"
-        else: shortcut_al="success"
+        if oil_vol and oil_vol_prev:
+            if oil_vol>oil_vol_prev: oil_al="success"
+            elif oil_vol<oil_vol_prev: oil_al="danger"
+            else: oil_al="warning"
+        else:
+            oil_al="success"
 
     except:
-        oil_vol = None; oil_vol_ref=None; sp_chg=None; insider_flow=None; shortcut_al="success"
+        oil_vol=None; oil_vol_prev=None; oil_al="success"
 
-    shortcut2 = {
+    oil_analysis = {
         "oil_vol": oil_vol,
-        "oil_vol_ref": oil_vol_ref,
-        "sp_chg": sp_chg,
-        "insider_flow": insider_flow,
-        "al": shortcut_al
+        "oil_vol_prev": oil_vol_prev,
+        "al": oil_al
     }
 
-    return results, ratio, ratio_chg, ratio_al, shortcut2
+    return results, ratio, ratio_chg, ratio_al, oil_analysis
 
 # =========================
 # HTML Template
@@ -156,7 +145,7 @@ HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gschmäckle Radar v4.0</title>
+<title>Gschmäckle Radar v4.1</title>
 <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/1995/1995531.png">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
@@ -175,7 +164,7 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 </head>
 <body>
 <div class="container py-2">
-<h2 class="text-center neon mb-2">Gschmäckle Radar v4.0 🚀</h2>
+<h2 class="text-center neon mb-2">Gschmäckle Radar v4.1 🚀</h2>
 
 <div class="text-center ratio-box border-{{ratio_al}}">
 <small class="lbl">GOLD/SILBER RATIO</small><br>
@@ -212,25 +201,17 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 {% endfor %}
 </div>
 
-<!-- Shortcut 2 Panel -->
-<div class="card my-3 border-{{shortcut2.al}}">
-<h5 class="text-center neon">Shortcut 2 Analyse</h5>
+<!-- Öl Analyse Panel -->
+<div class="card my-3 border-{{oil_analysis.al}}">
+<h5 class="text-center neon">Öl Analyse</h5>
 <hr style="border-color:#333;margin:8px 0;">
 <div class="d-flex justify-content-between align-items-center">
-<span class="lbl">Öl-Volumen</span>
-<span class="p-val">{{shortcut2.oil_vol}} {% if shortcut2.oil_vol_ref %}(vs. {{shortcut2.oil_vol_ref}}){% endif %}</span>
+<span class="lbl">Volumen heute</span>
+<span class="p-val">{{oil_analysis.oil_vol}} {% if oil_analysis.oil_vol_prev %}(vs. {{oil_analysis.oil_vol_prev}}){% endif %}</span>
 </div>
 <div class="d-flex justify-content-between align-items-center">
-<span class="lbl">S&P 500 Veränderung</span>
-<span class="p-val">{{shortcut2.sp_chg|round(2)}}%</span>
-</div>
-<div class="d-flex justify-content-between align-items-center">
-<span class="lbl">Insider Flow</span>
-<span class="p-val">{{shortcut2.insider_flow}}</span>
-</div>
-<div class="d-flex justify-content-between align-items-center">
-<span class="lbl">Ampel Shortcut 2</span>
-<span class="text-{{shortcut2.al}} fw-bold">{{shortcut2.al|capitalize}}</span>
+<span class="lbl">Ampel Öl</span>
+<span class="text-{{oil_analysis.al}} fw-bold">{{oil_analysis.al|capitalize}}</span>
 </div>
 </div>
 
@@ -247,8 +228,8 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 # =========================
 @app.route("/")
 def home():
-    assets, ratio, ratio_chg, ratio_al, shortcut2 = get_market_data()
-    return render_template_string(HTML, assets=assets, ratio=ratio, ratio_chg=ratio_chg, ratio_al=ratio_al, shortcut2=shortcut2)
+    assets, ratio, ratio_chg, ratio_al, oil_analysis = get_market_data()
+    return render_template_string(HTML, assets=assets, ratio=ratio, ratio_chg=ratio_chg, ratio_al=ratio_al, oil_analysis=oil_analysis)
 
 # =========================
 # App starten
