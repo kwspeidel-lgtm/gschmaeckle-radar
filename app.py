@@ -19,7 +19,7 @@ TICKERS = {
 }
 
 # =========================
-# Daten abholen + Shortcut 2 + Interpretation
+# Daten abholen + Interpretation + Ampel-Farbe
 # =========================
 def get_market_data():
     results, prices = [], {}
@@ -95,111 +95,16 @@ def get_market_data():
                 else:
                     interp = "neutral"
 
+            # =========================
+            # Ampel-Farbe für echtes Icon
+            # =========================
+            if al == "danger":
+                al_color = "red"
+            elif al == "warning":
+                al_color = "yellow"
+            else:
+                al_color = "green"
+
             results.append({
                 "name": name,
-                "p": f"{p:.4f}" if is_fx else f"{p:.2f}",
-                "chg": f"{chg:+.2f}%",
-                "c_val": chg,
-                "rv": rv_str,
-                "al": al,
-                "interpretation": interp
-            })
-
-        except:
-            continue
-
-    # Gold/Silber-Ratio
-    try:
-        g_v = next((v for k,v in prices.items() if "Gold" in k), None)
-        s_v = next((v for k,v in prices.items() if "Silber" in k), None)
-        ratio = f"{g_v / s_v:.2f}" if g_v and s_v else "N/A"
-    except:
-        ratio = "N/A"
-
-    return results, ratio
-
-# =========================
-# HTML Template
-# =========================
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gschmäckle Radar v2.1</title>
-<link rel="icon" href="https://cdn-icons-png.flaticon.com/512/1995/1995531.png">
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>
-body{background:#0a0a0a;color:#fff;font-family:sans-serif;} 
-.neon{color:#39ff14;text-shadow:0 0 5px #39ff14;}
-.card{background:#161616;border-radius:12px;padding:12px;margin-bottom:8px;border:1px solid #333;}
-.ratio-box{border: 1px solid #444; padding: 10px; border-radius: 8px; margin-bottom: 15px; background: #111;}
-.up{color:#00d4ff;}.down{color:#ff3131;}
-.p-val{color:#ffffff !important; font-weight:bold; font-size:1.1rem;}
-.lbl{color:#888;font-size:0.75rem;}
-.disc{font-size:0.7rem;color:#ff6666;padding:15px;border-top:2px solid #222;margin-top:15px;}
-.text-success{color:#39ff14 !important;}
-.text-warning{color:#ffcc00 !important;}
-.text-danger{color:#ff3131 !important;}
-</style>
-</head>
-<body>
-<div class="container py-2">
-<h2 class="text-center neon mb-2">Gschmäckle Radar v2.1 🚀</h2>
-
-<div class="text-center ratio-box">
-<small class="lbl">GOLD/SILBER RATIO</small><br>
-<span class="h4 neon">{{ ratio }}</span>
-</div>
-
-<div class="row">
-{% for a in assets %}
-<div class="col-12 col-md-6">
-<div class="card border-{{a.al}}">
-<div class="d-flex justify-content-between align-items-center">
-<h6 class="mb-0" style="color:#39ff14;">{{a.name}}</h6>
-<span class="{% if a.c_val >= 0 %}up{% else %}down{% endif %} fw-bold">{{a.chg}}</span>
-</div>
-<hr style="border-color:#333;margin:8px 0;">
-<div class="d-flex justify-content-between align-items-center">
-<span class="lbl">PREIS</span><span class="p-val">{{a.p}}</span>
-</div>
-<div class="d-flex justify-content-between align-items-center">
-<span class="lbl">RVOL</span>
-{% if a.rv == "N/A" %}
-  <strong class="text-{{a.al}}">N/A</strong>
-{% else %}
-  <strong class="text-{{a.al}}">{{a.rv}}</strong>
-{% endif %}
-</div>
-<div class="d-flex justify-content-between align-items-center">
-<span class="lbl">Interpretation</span>
-<span class="text-{{a.al}} fw-bold">{{a.interpretation}}</span>
-</div>
-</div>
-</div>
-{% endfor %}
-</div>
-
-<div class="disc">
-<strong>Disclaimer:</strong> Keine Anlageberatung. Alle Daten verzögert. Nutzung auf eigene Gefahr.
-</div>
-</div>
-</body>
-</html>
-"""
-
-# =========================
-# Flask Route
-# =========================
-@app.route("/")
-def home():
-    assets, ratio = get_market_data()
-    return render_template_string(HTML, assets=assets, ratio=ratio)
-
-# =========================
-# App starten
-# =========================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+                "p": f"{p:.4f}" if is_fx else f"{p
