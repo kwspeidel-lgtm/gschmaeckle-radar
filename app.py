@@ -1,77 +1,87 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, make_response
 import yfinance as yf
+import time
 
 app = Flask(__name__)
 
+# =========================
+# CACHE
+# =========================
+CACHE = {}
+CACHE_TIME = 30
+
+def get_data(sym, period="5d"):
+    now = time.time()
+    key = f"{sym}_{period}"
+
+    if key in CACHE and now - CACHE[key]['time'] < CACHE_TIME:
+        return CACHE[key]['data']
+
+    try:
+        data = yf.download(sym, period=period, progress=False)
+        CACHE[key] = {"data": data, "time": now}
+        return data
+    except:
+        return None
+
+# =========================
+# TICKER
+# =========================
 TICKERS = {
-    "DAX (^GDAXI)": "^GDAXI",
-    "Euro Stoxx 50 (^STOXX50E)": "^STOXX50E",
-    "S&P 500 (^GSPC)": "^GSPC",
-    "Dow Jones (^DJI)": "^DJI",
-    "Nasdaq (^IXIC)": "^IXIC",
-    "Gold (GC=F)": "GC=F",
-    "Silber (SI=F)": "SI=F",
-    "Kupfer (HG=F)": "HG=F",
-    "Öl WTI (CL=F)": "CL=F",
-    "EUR/USD (EURUSD=X)": "EURUSD=X",
-    "Bitcoin (BTC-USD)": "BTC-USD"
+    "DAX": "^GDAXI",
+    "S&P 500": "^GSPC",
+    "Gold": "GC=F",
+    "Silber": "SI=F",
+    "Öl": "CL=F",
+    "Bitcoin": "BTC-USD",
+    "EUR/USD": "EURUSD=X"
 }
 
+# =========================
+# DATEN
+# =========================
 def get_market_data():
-    results, prices = [], {}
+    results = []
 
     for name, sym in TICKERS.items():
+        h = get_data(sym, "5d")
+        if h is None or h.empty or len(h) < 2:
+            continue
+
         try:
-            t = yf.Ticker(sym)
-            h = t.history(period="5d")
-            if h.empty or len(h) < 2: continue
-
-            p, prev = h['Close'].iloc[-1], h['Close'].iloc[-2]
+            p = h['Close'].iloc[-1]
+            prev = h['Close'].iloc[-2]
             chg = ((p - prev)/prev)*100
-            prices[name] = p
 
-            is_fx = "EURUSD" in sym
-            is_special = sym in ["HG=F", "CL=F"]
-            is_btc = "BTC-USD" in sym
+            is_fx = sym == "EURUSD=X"
+            is_special = sym in ["CL=F", "BTC-USD"]
 
-            # ===== FORMAT PREIS =====
+            # Preisformat
             if is_fx:
                 price_str = f"{p:.4f}"
-            elif is_btc or is_special:
+            elif is_special:
                 price_str = "{:,.2f}".format(p)
             else:
                 price_str = f"{p:.2f}"
 
-            # ===== VOLUMEN =====
+            # Volumen
             rv_str = ""
-            if is_special or is_btc:
+            if is_special:
                 try:
-                    vol = int(h['Volume'].iloc[-1])
-                    rv_str = "{:,}".format(vol)
-                except:
-                    rv_str = ""
-            else:
-                try:
-                    h_v = t.history(period="1mo")
-                    cv, av = h_v['Volume'].iloc[-1], h_v['Volume'].iloc[-12:-2].mean()
-                    if cv == 0 or (av>0 and cv/av>50):
-                        cv = h_v['Volume'].iloc[-2]
-                    rv = cv/av if av>0 else 0
-                    rv_str = f"{rv:.2f}"
+                    rv_str = "{:,}".format(int(h['Volume'].iloc[-1]))
                 except:
                     rv_str = ""
 
-            # ===== INTERPRETATION =====
-            if chg > 2:
-                interp = "stark bullisch"; al="success"
-            elif chg > 0.5:
-                interp = "leicht bullisch"; al="success"
-            elif chg < -2:
-                interp = "stark bärisch"; al="danger"
-            elif chg < -0.5:
-                interp = "leicht bärisch"; al="warning"
+            # Interpretation
+            if chg > 1:
+                al = "success"
+                interp = "bullisch"
+            elif chg < -1:
+                al = "danger"
+                interp = "bärisch"
             else:
-                interp = "neutral"; al="warning"
+                al = "warning"
+                interp = "neutral"
 
             results.append({
                 "name": name,
@@ -81,67 +91,43 @@ def get_market_data():
                 "al": al,
                 "interpretation": interp
             })
+
         except:
             continue
 
-    # ===== GOLD/SILBER RATIO =====
+    # Öl Volumen heute vs gestern
     try:
-        g = yf.Ticker("GC=F").history(period="2d")
-        s = yf.Ticker("SI=F").history(period="2d")
+        oil = get_data("CL=F", "5d")
+        v1 = int(oil['Volume'].iloc[-1])
+        v2 = int(oil['Volume'].iloc[-2])
 
-        ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
-        ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
-        ratio_chg = ((ratio - ratio_prev)/ratio_prev)*100
-
-        if ratio_chg > 0.5:
-            ratio_al = "success"
-        elif ratio_chg < -0.5:
-            ratio_al = "danger"
-        else:
-            ratio_al = "warning"
-    except:
-        ratio = None; ratio_chg=None; ratio_al="success"
-
-    # ===== ÖL VOLUMEN HEUTE VS GESTERN =====
-    try:
-        oil = yf.Ticker("CL=F").history(period="5d")
-
-        vol_today = int(oil['Volume'].iloc[-1])
-        vol_yesterday = int(oil['Volume'].iloc[-2])
-
-        vol_today_str = "{:,}".format(vol_today)
-        vol_yesterday_str = "{:,}".format(vol_yesterday)
-
-        if vol_today > vol_yesterday:
+        if v1 > v2:
             oil_al = "success"
-        elif vol_today < vol_yesterday:
+        elif v1 < v2:
             oil_al = "danger"
         else:
             oil_al = "warning"
 
+        shortcut2 = {
+            "today": "{:,}".format(v1),
+            "yesterday": "{:,}".format(v2),
+            "al": oil_al
+        }
     except:
-        vol_today_str = ""
-        vol_yesterday_str = ""
-        oil_al = "warning"
+        shortcut2 = {"today": "", "yesterday": "", "al": "warning"}
 
-    shortcut2 = {
-        "vol_today": vol_today_str,
-        "vol_yesterday": vol_yesterday_str,
-        "al": oil_al
-    }
+    return results, shortcut2
 
-    return results, ratio, ratio_chg, ratio_al, shortcut2
-
-
+# =========================
+# HTML
+# =========================
 HTML = """
-<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <title>Radar</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
-body{background:#0a0a0a;color:#fff;}
+body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 .card{background:#161616;padding:10px;margin:5px;border-radius:10px;}
 .text-success{color:#39ff14;}
 .text-warning{color:#ffcc00;}
@@ -150,34 +136,45 @@ body{background:#0a0a0a;color:#fff;}
 </head>
 <body>
 
-<div class="container">
-
-<h3>Gold/Silber Ratio: {{ratio|round(2)}} ({{ratio_chg|round(2)}}%)</h3>
+<h3>Live Radar</h3>
 
 {% for a in assets %}
 <div class="card border-{{a.al}}">
 <b>{{a.name}}</b> {{a.chg}}<br>
 Preis: {{a.p}}<br>
-Vol/RVOL: {{a.rv}}<br>
+Vol: {{a.rv}}<br>
 {{a.interpretation}}
 </div>
 {% endfor %}
 
 <div class="card border-{{shortcut2.al}}">
-<h4>Öl Volumen</h4>
-Heute: {{shortcut2.vol_today}}<br>
-Gestern: {{shortcut2.vol_yesterday}}
+<b>Öl Volumen</b><br>
+Heute: {{shortcut2.today}}<br>
+Gestern: {{shortcut2.yesterday}}
 </div>
 
-</div>
 </body>
 </html>
 """
 
+# =========================
+# ROUTE
+# =========================
 @app.route("/")
 def home():
-    assets, ratio, ratio_chg, ratio_al, shortcut2 = get_market_data()
-    return render_template_string(HTML, assets=assets, ratio=ratio, ratio_chg=ratio_chg, ratio_al=ratio_al, shortcut2=shortcut2)
+    assets, shortcut2 = get_market_data()
 
+    response = make_response(
+        render_template_string(HTML, assets=assets, shortcut2=shortcut2)
+    )
+
+    # 🔄 Auto Refresh alle 30 Sekunden
+    response.headers["Refresh"] = "30"
+
+    return response
+
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
