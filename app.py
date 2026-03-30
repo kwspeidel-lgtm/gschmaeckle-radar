@@ -8,7 +8,7 @@ app = Flask(__name__)
 # CACHE
 # =========================
 CACHE = {}
-CACHE_TIME = 30
+CACHE_TIME = 30  # Sekunden
 
 def get_data(sym, period="5d"):
     now = time.time()
@@ -19,9 +19,13 @@ def get_data(sym, period="5d"):
 
     try:
         data = yf.download(sym, period=period, progress=False)
+        if data.empty:
+            print(f"{sym} liefert keine Daten")
+            return None
         CACHE[key] = {"data": data, "time": now}
         return data
-    except:
+    except Exception as e:
+        print(f"Fehler bei {sym}: {e}")
         return None
 
 # =========================
@@ -29,12 +33,12 @@ def get_data(sym, period="5d"):
 # =========================
 TICKERS = {
     "DAX": "^GDAXI",
-    "S&P 500": "^GSPC",
+    "SP500": "^GSPC",
     "Gold": "GC=F",
     "Silber": "SI=F",
-    "Öl": "CL=F",
+    "Oel": "CL=F",
     "Bitcoin": "BTC-USD",
-    "EUR/USD": "EURUSD=X"
+    "EURUSD": "EURUSD=X"
 }
 
 # =========================
@@ -89,7 +93,8 @@ def get_market_data():
                 "interpretation": interp
             })
 
-        except:
+        except Exception as e:
+            print(f"Fehler beim Verarbeiten von {name}: {e}")
             continue
 
     # =========================
@@ -98,6 +103,8 @@ def get_market_data():
     try:
         g = get_data("GC=F", "2d")
         s = get_data("SI=F", "2d")
+        if g is None or s is None:
+            raise Exception("Gold oder Silber Daten fehlen")
 
         ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
         ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
@@ -110,7 +117,8 @@ def get_market_data():
         else:
             ratio_al = "warning"
 
-    except:
+    except Exception as e:
+        print(f"Fehler Gold/Silber Ratio: {e}")
         ratio = 0
         ratio_chg = 0
         ratio_al = "warning"
@@ -120,6 +128,8 @@ def get_market_data():
     # =========================
     try:
         oil = get_data("CL=F", "5d")
+        if oil is None or len(oil) < 2:
+            raise Exception("Öl Daten fehlen")
 
         close_today = oil['Close'].iloc[-1]
         close_yest = oil['Close'].iloc[-2]
@@ -162,7 +172,8 @@ def get_market_data():
             "al": oil_al
         }
 
-    except:
+    except Exception as e:
+        print(f"Fehler Öl Analyse: {e}")
         oil_data = {
             "price": "",
             "chg": "",
@@ -183,10 +194,13 @@ HTML = """
 <title>Radar Pro</title>
 <style>
 body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
-.card{background:#161616;padding:10px;margin:5px;border-radius:10px;}
+.card{background:#161616;padding:10px;margin:5px;border-radius:10px;border:2px solid #333;}
 .text-success{color:#39ff14;}
 .text-warning{color:#ffcc00;}
 .text-danger{color:#ff3131;}
+.border-success{border-color:#39ff14;}
+.border-warning{border-color:#ffcc00;}
+.border-danger{border-color:#ff3131;}
 </style>
 </head>
 <body>
@@ -240,4 +254,4 @@ def home():
 # START
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)  # localhost:5000
