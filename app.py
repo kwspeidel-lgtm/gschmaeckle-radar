@@ -4,7 +4,7 @@ import yfinance as yf
 app = Flask(__name__)
 
 # =========================
-# Tickerliste v2.0
+# Tickerliste
 # =========================
 TICKERS = {
     "DAX (^GDAXI)": "^GDAXI",
@@ -19,10 +19,11 @@ TICKERS = {
 }
 
 # =========================
-# Daten abholen
+# Daten abholen + Shortcut 2
 # =========================
 def get_market_data():
     results, prices = [], {}
+    
     for name, sym in TICKERS.items():
         try:
             t = yf.Ticker(sym)
@@ -36,11 +37,14 @@ def get_market_data():
 
             is_fx = "EURUSD" in sym
             is_copper = "HG=F" in sym
+            is_oil = "CL=F" in sym
 
-            # RVOL nur für Aktien / Indizes, NICHT FX oder Kupfer
+            # RVOL & Ampel
             rv_str = "N/A"
             al = "success"
-            if not is_fx and not is_copper:
+
+            # Aktien / Indizes RVOL
+            if not is_fx and not is_copper and not is_oil:
                 h_v = t.history(period="1mo")
                 cv, av = h_v['Volume'].iloc[-1], h_v['Volume'].iloc[-12:-2].mean()
                 if cv == 0 or (av > 0 and cv/av > 50):
@@ -48,6 +52,26 @@ def get_market_data():
                 rv = cv / av if av > 0 else 0
                 rv_str = f"{rv:.2f}"
                 al = "danger" if rv > 3.0 else "success"
+
+            # Shortcut 2 Ampel für Öl
+            if is_oil:
+                if chg > 2:
+                    al = "danger"
+                elif chg > 0.5:
+                    al = "warning"
+                else:
+                    al = "success"
+                rv_str = "N/A"
+
+            # Shortcut 2 Ampel für Kupfer
+            if is_copper:
+                if chg > 2:
+                    al = "danger"
+                elif chg > 0.5:
+                    al = "warning"
+                else:
+                    al = "success"
+                rv_str = "N/A"
 
             results.append({
                 "name": name,
@@ -57,6 +81,7 @@ def get_market_data():
                 "rv": rv_str,
                 "al": al
             })
+
         except:
             continue
 
@@ -68,8 +93,6 @@ def get_market_data():
     except:
         ratio = "N/A"
 
-    # Shortcut 2 (Beispiel: Ampel Score, Oil/Copper Einfluss)
-    # Kannst hier noch erweitern
     return results, ratio
 
 # =========================
@@ -89,12 +112,13 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 .neon{color:#39ff14;text-shadow:0 0 5px #39ff14;}
 .card{background:#161616;border-radius:12px;padding:12px;margin-bottom:8px;border:1px solid #333;}
 .ratio-box{border: 1px solid #444; padding: 10px; border-radius: 8px; margin-bottom: 15px; background: #111;}
-.border-danger{border:2px solid #ff3131!important;box-shadow:0 0 8px #ff3131;}
-.border-success{border:1px solid #333!important;}
 .up{color:#00d4ff;}.down{color:#ff3131;}
 .p-val{color:#ffffff !important; font-weight:bold; font-size:1.1rem;}
 .lbl{color:#888;font-size:0.75rem;}
 .disc{font-size:0.7rem;color:#ff6666;padding:15px;border-top:2px solid #222;margin-top:15px;}
+.text-success{color:#39ff14 !important;}
+.text-warning{color:#ffcc00 !important;}
+.text-danger{color:#ff3131 !important;}
 </style>
 </head>
 <body>
@@ -119,7 +143,12 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 <span class="lbl">PREIS</span><span class="p-val">{{a.p}}</span>
 </div>
 <div class="d-flex justify-content-between align-items-center">
-<span class="lbl">RVOL</span><strong class="text-{{a.al}}">{{a.rv}}</strong>
+<span class="lbl">RVOL</span>
+{% if a.rv == "N/A" %}
+  <strong class="text-{{a.al}}">N/A</strong>
+{% else %}
+  <strong class="text-{{a.al}}">{{a.rv}}</strong>
+{% endif %}
 </div>
 </div>
 </div>
