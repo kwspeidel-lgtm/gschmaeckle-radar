@@ -38,7 +38,7 @@ TICKERS = {
 }
 
 # =========================
-# DATEN
+# MARKTDATEN
 # =========================
 def get_market_data():
     results = []
@@ -64,9 +64,9 @@ def get_market_data():
             else:
                 price_str = f"{p:.2f}"
 
-            # Volumen
+            # Volumen nur BTC
             rv_str = ""
-            if is_special:
+            if sym == "BTC-USD":
                 try:
                     rv_str = "{:,}".format(int(h['Volume'].iloc[-1]))
                 except:
@@ -74,14 +74,11 @@ def get_market_data():
 
             # Interpretation
             if chg > 1:
-                al = "success"
-                interp = "bullisch"
+                al = "success"; interp = "bullisch"
             elif chg < -1:
-                al = "danger"
-                interp = "bärisch"
+                al = "danger"; interp = "bärisch"
             else:
-                al = "warning"
-                interp = "neutral"
+                al = "warning"; interp = "neutral"
 
             results.append({
                 "name": name,
@@ -95,28 +92,86 @@ def get_market_data():
         except:
             continue
 
-    # Öl Volumen heute vs gestern
+    # =========================
+    # GOLD/SILBER RATIO
+    # =========================
+    try:
+        g = get_data("GC=F", "2d")
+        s = get_data("SI=F", "2d")
+
+        ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
+        ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
+        ratio_chg = ((ratio - ratio_prev)/ratio_prev)*100
+
+        if ratio_chg > 0.5:
+            ratio_al = "success"
+        elif ratio_chg < -0.5:
+            ratio_al = "danger"
+        else:
+            ratio_al = "warning"
+
+    except:
+        ratio = 0
+        ratio_chg = 0
+        ratio_al = "warning"
+
+    # =========================
+    # 🔥 ÖL PRO ANALYSE
+    # =========================
     try:
         oil = get_data("CL=F", "5d")
-        v1 = int(oil['Volume'].iloc[-1])
-        v2 = int(oil['Volume'].iloc[-2])
 
-        if v1 > v2:
+        close_today = oil['Close'].iloc[-1]
+        close_yest = oil['Close'].iloc[-2]
+
+        high_today = oil['High'].iloc[-1]
+        low_today = oil['Low'].iloc[-1]
+
+        high_yest = oil['High'].iloc[-2]
+        low_yest = oil['Low'].iloc[-2]
+
+        # Preisveränderung
+        oil_chg = ((close_today - close_yest)/close_yest)*100
+
+        # Range heute vs gestern
+        range_today = high_today - low_today
+        range_yest = high_yest - low_yest
+
+        range_str = f"{range_today:.2f}"
+        range_delta = range_today - range_yest
+
+        # Interpretation
+        if oil_chg > 1 and range_today > range_yest:
+            oil_text = "Bullisch + hohe Aktivität"
             oil_al = "success"
-        elif v1 < v2:
+        elif oil_chg < -1 and range_today > range_yest:
+            oil_text = "Bärisch + hohe Aktivität"
             oil_al = "danger"
+        elif range_today < range_yest:
+            oil_text = "Ruhiger Markt"
+            oil_al = "warning"
         else:
+            oil_text = "Neutral"
             oil_al = "warning"
 
-        shortcut2 = {
-            "today": "{:,}".format(v1),
-            "yesterday": "{:,}".format(v2),
+        oil_data = {
+            "price": "{:,.2f}".format(close_today),
+            "chg": f"{oil_chg:+.2f}%",
+            "range": range_str,
+            "interpretation": oil_text,
             "al": oil_al
         }
-    except:
-        shortcut2 = {"today": "", "yesterday": "", "al": "warning"}
 
-    return results, shortcut2
+    except:
+        oil_data = {
+            "price": "",
+            "chg": "",
+            "range": "",
+            "interpretation": "Fehler",
+            "al": "danger"
+        }
+
+    return results, ratio, ratio_chg, ratio_al, oil_data
 
 # =========================
 # HTML
@@ -125,7 +180,7 @@ HTML = """
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Radar</title>
+<title>Radar Pro</title>
 <style>
 body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 .card{background:#161616;padding:10px;margin:5px;border-radius:10px;}
@@ -136,21 +191,24 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 </head>
 <body>
 
-<h3>Live Radar</h3>
+<h3>Gschmäckle Radar PRO</h3>
+
+<h4>Gold/Silber Ratio: {{ratio|round(2)}} ({{ratio_chg|round(2)}}%)</h4>
 
 {% for a in assets %}
 <div class="card border-{{a.al}}">
 <b>{{a.name}}</b> {{a.chg}}<br>
 Preis: {{a.p}}<br>
-Vol: {{a.rv}}<br>
 {{a.interpretation}}
 </div>
 {% endfor %}
 
-<div class="card border-{{shortcut2.al}}">
-<b>Öl Volumen</b><br>
-Heute: {{shortcut2.today}}<br>
-Gestern: {{shortcut2.yesterday}}
+<div class="card border-{{oil.al}}">
+<h4>Öl PRO Analyse</h4>
+Preis: {{oil.price}}<br>
+Veränderung: {{oil.chg}}<br>
+Range: {{oil.range}}<br>
+{{oil.interpretation}}
 </div>
 
 </body>
@@ -162,15 +220,20 @@ Gestern: {{shortcut2.yesterday}}
 # =========================
 @app.route("/")
 def home():
-    assets, shortcut2 = get_market_data()
+    assets, ratio, ratio_chg, ratio_al, oil = get_market_data()
 
     response = make_response(
-        render_template_string(HTML, assets=assets, shortcut2=shortcut2)
+        render_template_string(
+            HTML,
+            assets=assets,
+            ratio=ratio,
+            ratio_chg=ratio_chg,
+            ratio_al=ratio_al,
+            oil=oil
+        )
     )
 
-    # 🔄 Auto Refresh alle 30 Sekunden
     response.headers["Refresh"] = "30"
-
     return response
 
 # =========================
