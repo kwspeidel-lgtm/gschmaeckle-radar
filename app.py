@@ -19,11 +19,11 @@ TICKERS = {
 }
 
 # =========================
-# Daten abholen + Shortcut 2
+# Daten abholen + Shortcut 2 + Interpretation
 # =========================
 def get_market_data():
     results, prices = [], {}
-    
+
     for name, sym in TICKERS.items():
         try:
             t = yf.Ticker(sym)
@@ -73,13 +73,36 @@ def get_market_data():
                     al = "success"
                 rv_str = "N/A"
 
+            # =========================
+            # Automatische Interpretation
+            # =========================
+            if is_copper or is_oil:
+                if al == "danger":
+                    interp = "stark auffällig"
+                elif al == "warning":
+                    interp = "leicht auffällig"
+                else:
+                    interp = "normal"
+            else:  # Aktien / Indizes / Futures
+                if chg > 2:
+                    interp = "starker Anstieg"
+                elif chg > 0.5:
+                    interp = "leichter Anstieg"
+                elif chg < -2:
+                    interp = "starker Rückgang"
+                elif chg < -0.5:
+                    interp = "leichter Rückgang"
+                else:
+                    interp = "neutral"
+
             results.append({
                 "name": name,
                 "p": f"{p:.4f}" if is_fx else f"{p:.2f}",
                 "chg": f"{chg:+.2f}%",
                 "c_val": chg,
                 "rv": rv_str,
-                "al": al
+                "al": al,
+                "interpretation": interp
             })
 
         except:
@@ -104,7 +127,7 @@ HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gschmäckle Radar v2.0</title>
+<title>Gschmäckle Radar v2.1</title>
 <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/1995/1995531.png">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
@@ -123,7 +146,7 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 </head>
 <body>
 <div class="container py-2">
-<h2 class="text-center neon mb-2">Gschmäckle Radar v2.0 🚀</h2>
+<h2 class="text-center neon mb-2">Gschmäckle Radar v2.1 🚀</h2>
 
 <div class="text-center ratio-box">
 <small class="lbl">GOLD/SILBER RATIO</small><br>
@@ -149,6 +172,10 @@ body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 {% else %}
   <strong class="text-{{a.al}}">{{a.rv}}</strong>
 {% endif %}
+</div>
+<div class="d-flex justify-content-between align-items-center">
+<span class="lbl">Interpretation</span>
+<span class="text-{{a.al}} fw-bold">{{a.interpretation}}</span>
 </div>
 </div>
 </div>
