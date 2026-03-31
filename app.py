@@ -11,27 +11,31 @@ app = Flask(__name__)
 # ==========================================
 def get_data(sym, period="7d", interval="1h"):
     try:
-        # Wir laden die Daten und bereinigen den Header (Multi-Index Fix)
+        # Wir laden die Daten und flachen den Multi-Index ab
         df = yf.download(sym, period=period, interval=interval, progress=False)
-        
         if df.empty:
             return None
-            
-        # Falls yfinance mehrere Spalten-Ebenen liefert (Ticker im Header), flach machen
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-            
         return df
     except Exception as e:
         print(f"Fehler bei {sym}: {e}")
         return None
 
 # ==========================================
-# FORMATIERUNG & TICKER
+# TICKER-DEFINITION (ERWEITERT)
 # ==========================================
 TICKERS = {
-    "DAX": "^GDAXI", "S&P 500": "^GSPC", 
-    "Gold": "GC=F", "Silber": "SI=F",
+    "DAX": "^GDAXI",
+    "NASDAQ 100": "^IXIC",
+    "S&P 500": "^GSPC",
+    "Euro Stoxx 50": "^STOXX50E",
+    "Nikkei 225": "^N225",
+    "Hang Seng": "^HSI",
+    "Kupfer": "HG=F",
+    "Gold": "GC=F",
+    "Silber": "SI=F",
+    "Bitcoin": "BTC-USD",
     "EUR/USD": "EURUSD=X"
 }
 
@@ -49,17 +53,31 @@ def get_market_data():
     oil_summary = []
     ratio = 0.0
 
-    # 1. Standard-Assets
+    # 1. Alle Assets (Inkl. Kupfer, Nasdaq, Asien)
     for name, sym in TICKERS.items():
+        # Wir laden 5 Tage, um sicher den letzten Schlusskurs zu haben (Wochenende/Feiertag)
         df = get_data(sym, "5d", "1h")
-        if df is not None and len(df) > 1:
-            p = df['Close'].iloc[-1]
-            prev = df['Close'].iloc[-2]
-            chg = ((p - prev) / prev) * 100
-            p_str = f"{p:.4f}" if "EURUSD" in sym else format_de(p)
-            results.append({
-                "name": name, "p": p_str, "chg": f"{chg:+.2f}%"
-            })
+        if df is not None and len(df) >= 2:
+            try:
+                p = float(df['Close'].iloc[-1])
+                prev = float(df['Close'].iloc[-2])
+                chg = ((p - prev) / prev) * 100
+                
+                # Spezialformatierung für FX und Krypto
+                if "EURUSD" in sym:
+                    p_str = f"{p:.4f}"
+                elif "BTC" in sym:
+                    p_str = f"{int(p):,}".replace(",", ".")
+                else:
+                    p_str = format_de(p)
+                
+                results.append({
+                    "name": name, 
+                    "p": p_str, 
+                    "chg": f"{chg:+.2f}%",
+                    "color": "#00ff00" if chg >= 0 else "#ff4444"
+                })
+            except: continue
 
     # 2. Gold/Silber Ratio
     try:
@@ -70,36 +88,28 @@ def get_market_data():
     except:
         ratio = 0.0
 
-    # 3. ÖL-ANALYSE (Dein 24h RVOL-Check)
+    # 3. ÖL-ANALYSE (RVOL Check)
     for name, sym in [("WTI", "CL=F"), ("Brent", "BZ=F")]:
         df = get_data(sym, "7d", "1h")
         if df is not None and len(df) > 25:
             try:
                 now_idx = df.index[-1]
                 target_time = now_idx - timedelta(hours=24)
-                
-                # Finde die Bar, die gestern am nächsten zur selben Zeit war
                 idx_yest = df.index.get_indexer([target_time], method='nearest')[0]
                 
                 v_now = float(df['Volume'].iloc[-1])
                 v_yest = float(df['Volume'].iloc[idx_yest])
-                p_now = float(df['Close'].iloc[-1])
-                
                 rvol = v_now / v_yest if v_yest > 0 else 0
-                
-                # Alarm-Status für RVOL > 3 (Dein Shortcut)
-                status = "danger" if rvol > 3 else "warning"
                 
                 oil_summary.append({
                     "name": name,
-                    "price": format_de(p_now),
+                    "price": format_de(df['Close'].iloc[-1]),
                     "v_now": f"{int(v_now):,}".replace(",", "."),
                     "v_yest": f"{int(v_yest):,}".replace(",", "."),
                     "rvol": f"{rvol:.2f}",
-                    "al": status
+                    "al": "danger" if rvol > 3 else "warning"
                 })
-            except Exception as e:
-                print(f"Öl Error {name}: {e}")
+            except: continue
 
     return results, ratio, oil_summary
 
@@ -114,46 +124,47 @@ HTML = """
     <title>Radar Pro</title>
     <style>
         body { background:#0a0a0a; color:#eee; font-family:sans-serif; padding:15px; }
-        .card { background:#161616; padding:12px; margin-bottom:10px; border-radius:8px; border-left:5px solid #444; }
+        .card { background:#161616; padding:12px; margin-bottom:8px; border-radius:8px; border-left:4px solid #444; }
         .border-warning { border-left-color: #ffcc00; }
         .border-danger { border-left-color: #ff3131; background: #2a1111; }
         h3, h4 { margin: 5px 0; color: #fff; }
-        .rvol-val { font-size: 1.2em; font-weight: bold; color: #00ffcc; }
-        .mini { font-size: 0.85em; color: #888; }
+        .rvol-val { font-size: 1.1em; font-weight: bold; color: #00ffcc; }
+        .chg-val { font-weight: bold; float: right; }
+        .mini { font-size: 0.8em; color: #777; }
+        hr { border:0; border-top:1px solid #333; margin:15px 0; }
     </style>
 </head>
 <body>
     <h3>Gschmäckle Radar PRO</h3>
-    <p>Gold/Silber Ratio: <b>{{ratio|round(2)}}</b></p>
+    <p>Gold/Silber Ratio: <b style="color:#ffcc00;">{{ratio|round(2)}}</b></p>
     
-    <hr style="border:0; border-top:1px solid #333; margin:15px 0;">
+    <hr>
 
     {% for o in oil %}
     <div class="card border-{{o.al}}">
-        <h4>{{o.name}} Öl (Uhrzeit-Check)</h4>
+        <h4>{{o.name}} Öl (24h Vol-Check)</h4>
         Preis: <b>{{o.price}}</b> | RVOL: <span class="rvol-val">{{o.rvol}}</span><br>
-        <span class="mini">Volumen Jetzt: {{o.v_now}} vs. Gestern: {{o.v_yest}}</span>
+        <span class="mini">Volumen: {{o.v_now}} (Heute) vs. {{o.v_yest}} (Gestern)</span>
     </div>
     {% endfor %}
 
-    <h4>Markt-Übersicht</h4>
+    <h4>Markt-Monitor</h4>
     {% for a in assets %}
     <div class="card">
-        <b>{{a.name}}</b>: {{a.p}} ({{a.chg}})
+        <span class="chg-val" style="color:{{a.color}};">{{a.chg}}</span>
+        <b>{{a.name}}</b><br>
+        <span style="color:#aaa;">{{a.p}}</span>
     </div>
     {% endfor %}
 </body>
 </html>
 """
 
-# ==========================================
-# FLASK ROUTE
-# ==========================================
 @app.route("/")
 def home():
     assets, ratio, oil = get_market_data()
     resp = make_response(render_template_string(HTML, assets=assets, ratio=ratio, oil=oil))
-    resp.headers["Refresh"] = "60" # Auto-Update jede Minute
+    resp.headers["Refresh"] = "45" # Update alle 45 Sekunden
     return resp
 
 if __name__ == "__main__":
