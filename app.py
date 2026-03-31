@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, make_response
+from flask import Flask, render_template_string
 import yfinance as yf
 import time
 
@@ -10,7 +10,7 @@ app = Flask(__name__)
 CACHE = {}
 CACHE_TIME = 30
 
-def get_data(sym, period="5d", interval="1d"):
+def get_data(sym, period="5d", interval="1h"):
     now = time.time()
     key = f"{sym}_{period}_{interval}"
 
@@ -32,9 +32,7 @@ def get_data(sym, period="5d", interval="1d"):
 def fmt_vol(v):
     try:
         v = int(v)
-        if v > 10000:
-            return "{:,}".format(v)
-        return str(v)
+        return "{:,}".format(v).replace(",", ".")
     except:
         return ""
 
@@ -45,8 +43,7 @@ TICKERS = {
     "DAX": "^GDAXI",
     "SP500": "^GSPC",
     "Gold": "GC=F",
-    "Silber": "SI=F",
-    "Bitcoin": "BTC-USD"
+    "Silber": "SI=F"
 }
 
 # =========================
@@ -56,28 +53,24 @@ def get_market_data():
     results = []
 
     for name, sym in TICKERS.items():
-        h = get_data(sym, "5d")
-        if h is None or len(h) < 2:
+        h = get_data(sym, "5d", "1d")
+        if h is None or len(h) < 3:
             continue
 
         try:
             p = h['Close'].iloc[-1]
             prev = h['Close'].iloc[-2]
-            chg = ((p - prev)/prev)*100
+            prev2 = h['Close'].iloc[-3]
 
-            if chg > 1:
-                al = "success"; interp = "bullisch"
-            elif chg < -1:
-                al = "danger"; interp = "bärisch"
-            else:
-                al = "warning"; interp = "neutral"
+            chg = ((p - prev)/prev)*100
+            chg_prev = ((prev - prev2)/prev2)*100
 
             results.append({
                 "name": name,
                 "p": f"{p:.2f}",
                 "chg": f"{chg:+.2f}%",
-                "al": al,
-                "interpretation": interp
+                "chg_raw": chg,
+                "chg_prev": chg_prev
             })
 
         except:
@@ -87,8 +80,8 @@ def get_market_data():
     # GOLD/SILBER
     # =========================
     try:
-        g = get_data("GC=F", "2d")
-        s = get_data("SI=F", "2d")
+        g = get_data("GC=F", "2d", "1d")
+        s = get_data("SI=F", "2d", "1d")
 
         ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
         ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
@@ -98,12 +91,12 @@ def get_market_data():
         ratio_chg = 0
 
     # =========================
-    # 🔥 ÖL PRO (WTI + BRENT)
+    # ÖL
     # =========================
     def oil_block(symbol):
         try:
-            d = get_data(symbol, "2d", "1h")  # Intraday!
-            if d is None or len(d) < 2:
+            d = get_data(symbol, "2d", "1h")
+            if d is None or len(d) < 25:
                 return None
 
             close_now = d['Close'].iloc[-1]
@@ -111,21 +104,15 @@ def get_market_data():
             chg = ((close_now - close_prev)/close_prev)*100
 
             vol_now = d['Volume'].iloc[-1]
-            vol_prev = d['Volume'].iloc[-2]
-
-            if vol_now > vol_prev:
-                vol_trend = "Volumen steigend"
-            elif vol_now < vol_prev:
-                vol_trend = "Volumen fallend"
-            else:
-                vol_trend = "Volumen gleich"
+            vol_yest = d['Volume'].iloc[-25]
 
             return {
                 "price": "{:,.2f}".format(close_now),
                 "chg": f"{chg:+.2f}%",
+                "chg_raw": chg,
                 "vol_now": fmt_vol(vol_now),
-                "vol_prev": fmt_vol(vol_prev),
-                "vol_trend": vol_trend
+                "vol_prev": fmt_vol(vol_yest),
+                "vol_trend": "steigend" if vol_now > vol_yest else "fallend"
             }
         except:
             return None
@@ -136,20 +123,19 @@ def get_market_data():
     return results, ratio, ratio_chg, wti, brent
 
 # =========================
-# ANOMALIE CHECK
+# LEVEL 3 ANOMALIE
 # =========================
 def anomaly_check(results, ratio_chg, wti):
     score = 0
     reasons = []
 
-    # Öl Bewegung + Volumen
+    # Öl Bewegung
     try:
-        oil_move = float(wti["chg"].replace("%", ""))
-        if abs(oil_move) > 1:
+        if abs(wti["chg_raw"]) > 1:
             score += 1
             reasons.append("Öl Bewegung")
 
-        if "steigend" in wti["vol_trend"]:
+        if wti["vol_trend"] == "steigend":
             score += 1
             reasons.append("Öl Volumen")
     except:
@@ -160,19 +146,34 @@ def anomaly_check(results, ratio_chg, wti):
         score += 1
         reasons.append("Gold/Silber")
 
-    # große Moves
+    # Momentum Spike
     for a in results:
         try:
-            chg = float(a["chg"].replace("%", ""))
-            if abs(chg) > 1.5:
+            if abs(a["chg_raw"]) > abs(a["chg_prev"]) * 1.5:
                 score += 1
-                reasons.append(a["name"])
+                reasons.append(f"Momentum {a['name']}")
         except:
             pass
 
-    if score >= 4:
+    # 🔴 Divergenz (KEY SIGNAL)
+    try:
+        dax = next(x for x in results if x["name"] == "DAX")
+        gold = next(x for x in results if x["name"] == "Gold")
+
+        if dax["chg_raw"] > 0 and gold["chg_raw"] > 0:
+            score += 1
+            reasons.append("Divergenz Aktien/Gold")
+
+        if wti["chg_raw"] > 0 and dax["chg_raw"] < 0:
+            score += 2
+            reasons.append("Öl vs Aktien Divergenz")
+    except:
+        pass
+
+    # Bewertung
+    if score >= 5:
         status = "🔴 Unregelmäßig"
-    elif score >= 2:
+    elif score >= 3:
         status = "🟡 Auffällig"
     else:
         status = "🟢 Normal"
@@ -188,71 +189,14 @@ HTML = """
 <meta charset="UTF-8">
 <style>
 body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
-.card{background:#161616;padding:10px;margin:5px;border-radius:10px;border:2px solid #333;}
+.card{background:#161616;padding:10px;margin:5px;border-radius:10px;}
 </style>
 </head>
 <body>
 
-<h3>Gschmäckle Radar PRO</h3>
+<h3>Gschmäckle Radar PRO - Level 3</h3>
 
 <h4>Status: {{status}}</h4>
 
 <div class="card">
-{% for r in reasons %}
-- {{r}}<br>
-{% endfor %}
-</div>
-
-<h4>Gold/Silber: {{ratio|round(2)}} ({{ratio_chg|round(2)}}%)</h4>
-
-{% for a in assets %}
-<div class="card">
-<b>{{a.name}}</b> {{a.chg}}<br>
-Preis: {{a.p}}<br>
-</div>
-{% endfor %}
-
-<div class="card">
-<h4>WTI Öl</h4>
-Preis: {{wti.price}}<br>
-{{wti.chg}}<br>
-Vol: {{wti.vol_now}} vs {{wti.vol_prev}}<br>
-{{wti.vol_trend}}
-</div>
-
-<div class="card">
-<h4>Brent Öl</h4>
-Preis: {{brent.price}}<br>
-{{brent.chg}}<br>
-Vol: {{brent.vol_now}} vs {{brent.vol_prev}}<br>
-{{brent.vol_trend}}
-</div>
-
-</body>
-</html>
-"""
-
-# =========================
-# ROUTE
-# =========================
-@app.route("/")
-def home():
-    assets, ratio, ratio_chg, wti, brent = get_market_data()
-    status, reasons = anomaly_check(assets, ratio_chg, wti)
-
-    return render_template_string(
-        HTML,
-        assets=assets,
-        ratio=ratio,
-        ratio_chg=ratio_chg,
-        wti=wti,
-        brent=brent,
-        status=status,
-        reasons=reasons
-    )
-
-# =========================
-# START
-# =========================
-if __name__ == "__main__":
-    app.run(debug=True)
+{% for r in reasons
