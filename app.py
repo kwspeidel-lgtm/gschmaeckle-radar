@@ -8,7 +8,7 @@ app = Flask(__name__)
 # CACHE
 # =========================
 CACHE = {}
-CACHE_TIME = 30  # Sekunden
+CACHE_TIME = 0  # Cache deaktiviert für sofortige Updates
 
 def get_data(sym, period="5d", interval="1h"):
     now = time.time()
@@ -43,11 +43,14 @@ TICKERS = {
 }
 
 # =========================
-# FORMATIERUNG
+# FORMATIERUNG DEUTSCH
 # =========================
 def format_de(zahl):
-    f_str = f"{zahl:,.2f}"
-    return f_str.replace(",", "X").replace(".", ",").replace("X", ".")
+    try:
+        f_str = f"{zahl:,.2f}"
+        return f_str.replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return str(zahl)
 
 # =========================
 # MARKTDATEN
@@ -70,12 +73,10 @@ def get_market_data():
 
             if is_fx:
                 price_str = f"{p:.4f}"
-            elif is_special:
-                price_str = format_de(p)
             else:
                 price_str = format_de(p)
 
-            # Volumen für Öl + BTC (ab 1000 → 1.000er Punkt)
+            # Volumen nur WTI/Brent/BTC
             rv_str = ""
             if sym in ["CL=F", "BZ=F", "BTC-USD"]:
                 try:
@@ -93,7 +94,7 @@ def get_market_data():
                 "p": price_str,
                 "chg": chg_str,
                 "rv": rv_str,
-                "al": "warning",  # Nur für CSS
+                "al": "warning"
             })
 
         except Exception as e:
@@ -110,7 +111,8 @@ def get_market_data():
             raise Exception("Gold oder Silber Daten fehlen")
 
         ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
-        ratio_chg = ((ratio - g['Close'].iloc[-2]/s['Close'].iloc[-2])/ (g['Close'].iloc[-2]/s['Close'].iloc[-2]))*100
+        ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
+        ratio_chg = ((ratio - ratio_prev)/ratio_prev)*100
         ratio_al = "warning"
 
     except Exception as e:
@@ -138,18 +140,18 @@ def get_market_data():
 
         try:
             close_today = oil['Close'].iloc[-1]
-            close_yest = oil['Close'].iloc[-25]  # ca. gleiche Uhrzeit gestern
 
+            # Volumen jetzt vs. gestern gleiche Uhrzeit
             vol_now = int(oil['Volume'].iloc[-1])
-            vol_yest = int(oil['Volume'].iloc[-25])
+            vol_yest = int(oil['Volume'].iloc[-25]) if len(oil) > 25 else int(oil['Volume'].iloc[0])
 
-            # Format Zahlen
+            # Preis und Volumen formatieren
             price_str = format_de(close_today)
             vol_now_str = f"{vol_now:,}".replace(",", ".")
             vol_yest_str = f"{vol_yest:,}".replace(",", ".")
 
-            chg = ((close_today - close_yest)/close_yest)*100
-            chg_str = f"{chg:+.2f}%"
+            chg = ((close_today - oil['Close'].iloc[-25])/oil['Close'].iloc[-25]*100) if len(oil) > 25 else 0
+            chg_str = f"{chg:+.2f}%" if len(oil) > 25 else ""
 
             oil_data.append({
                 "name": oil_sym,
