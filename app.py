@@ -8,25 +8,35 @@ app = Flask(__name__)
 # CACHE
 # =========================
 CACHE = {}
-CACHE_TIME = 30  # Sekunden
+CACHE_TIME = 30
 
-def get_data(sym, period="5d"):
+def get_data(sym, period="5d", interval="1d"):
     now = time.time()
-    key = f"{sym}_{period}"
+    key = f"{sym}_{period}_{interval}"
 
     if key in CACHE and now - CACHE[key]['time'] < CACHE_TIME:
         return CACHE[key]['data']
 
     try:
-        data = yf.download(sym, period=period, progress=False)
+        data = yf.download(sym, period=period, interval=interval, progress=False)
         if data.empty:
-            print(f"{sym} liefert keine Daten")
             return None
         CACHE[key] = {"data": data, "time": now}
         return data
-    except Exception as e:
-        print(f"Fehler bei {sym}: {e}")
+    except:
         return None
+
+# =========================
+# FORMAT
+# =========================
+def fmt_vol(v):
+    try:
+        v = int(v)
+        if v > 10000:
+            return "{:,}".format(v)
+        return str(v)
+    except:
+        return ""
 
 # =========================
 # TICKER
@@ -36,9 +46,7 @@ TICKERS = {
     "SP500": "^GSPC",
     "Gold": "GC=F",
     "Silber": "SI=F",
-    "Oel": "CL=F",
-    "Bitcoin": "BTC-USD",
-    "EURUSD": "EURUSD=X"
+    "Bitcoin": "BTC-USD"
 }
 
 # =========================
@@ -49,7 +57,7 @@ def get_market_data():
 
     for name, sym in TICKERS.items():
         h = get_data(sym, "5d")
-        if h is None or h.empty or len(h) < 2:
+        if h is None or len(h) < 2:
             continue
 
         try:
@@ -57,26 +65,6 @@ def get_market_data():
             prev = h['Close'].iloc[-2]
             chg = ((p - prev)/prev)*100
 
-            is_fx = sym == "EURUSD=X"
-            is_special = sym in ["CL=F", "BTC-USD"]
-
-            # Preisformat
-            if is_fx:
-                price_str = f"{p:.4f}"
-            elif is_special:
-                price_str = "{:,.2f}".format(p)
-            else:
-                price_str = f"{p:.2f}"
-
-            # Volumen nur BTC
-            rv_str = ""
-            if sym == "BTC-USD":
-                try:
-                    rv_str = "{:,}".format(int(h['Volume'].iloc[-1]))
-                except:
-                    rv_str = ""
-
-            # Interpretation
             if chg > 1:
                 al = "success"; interp = "bullisch"
             elif chg < -1:
@@ -86,103 +74,110 @@ def get_market_data():
 
             results.append({
                 "name": name,
-                "p": price_str,
+                "p": f"{p:.2f}",
                 "chg": f"{chg:+.2f}%",
-                "rv": rv_str,
                 "al": al,
                 "interpretation": interp
             })
 
-        except Exception as e:
-            print(f"Fehler beim Verarbeiten von {name}: {e}")
+        except:
             continue
 
     # =========================
-    # GOLD/SILBER RATIO
+    # GOLD/SILBER
     # =========================
     try:
         g = get_data("GC=F", "2d")
         s = get_data("SI=F", "2d")
-        if g is None or s is None:
-            raise Exception("Gold oder Silber Daten fehlen")
 
         ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
         ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
         ratio_chg = ((ratio - ratio_prev)/ratio_prev)*100
-
-        if ratio_chg > 0.5:
-            ratio_al = "success"
-        elif ratio_chg < -0.5:
-            ratio_al = "danger"
-        else:
-            ratio_al = "warning"
-
-    except Exception as e:
-        print(f"Fehler Gold/Silber Ratio: {e}")
+    except:
         ratio = 0
         ratio_chg = 0
-        ratio_al = "warning"
 
     # =========================
-    # 🔥 ÖL PRO ANALYSE
+    # 🔥 ÖL PRO (WTI + BRENT)
     # =========================
+    def oil_block(symbol):
+        try:
+            d = get_data(symbol, "2d", "1h")  # Intraday!
+            if d is None or len(d) < 2:
+                return None
+
+            close_now = d['Close'].iloc[-1]
+            close_prev = d['Close'].iloc[-2]
+            chg = ((close_now - close_prev)/close_prev)*100
+
+            vol_now = d['Volume'].iloc[-1]
+            vol_prev = d['Volume'].iloc[-2]
+
+            if vol_now > vol_prev:
+                vol_trend = "Volumen steigend"
+            elif vol_now < vol_prev:
+                vol_trend = "Volumen fallend"
+            else:
+                vol_trend = "Volumen gleich"
+
+            return {
+                "price": "{:,.2f}".format(close_now),
+                "chg": f"{chg:+.2f}%",
+                "vol_now": fmt_vol(vol_now),
+                "vol_prev": fmt_vol(vol_prev),
+                "vol_trend": vol_trend
+            }
+        except:
+            return None
+
+    wti = oil_block("CL=F")
+    brent = oil_block("BZ=F")
+
+    return results, ratio, ratio_chg, wti, brent
+
+# =========================
+# ANOMALIE CHECK
+# =========================
+def anomaly_check(results, ratio_chg, wti):
+    score = 0
+    reasons = []
+
+    # Öl Bewegung + Volumen
     try:
-        oil = get_data("CL=F", "5d")
-        if oil is None or len(oil) < 2:
-            raise Exception("Öl Daten fehlen")
+        oil_move = float(wti["chg"].replace("%", ""))
+        if abs(oil_move) > 1:
+            score += 1
+            reasons.append("Öl Bewegung")
 
-        close_today = oil['Close'].iloc[-1]
-        close_yest = oil['Close'].iloc[-2]
+        if "steigend" in wti["vol_trend"]:
+            score += 1
+            reasons.append("Öl Volumen")
+    except:
+        pass
 
-        high_today = oil['High'].iloc[-1]
-        low_today = oil['Low'].iloc[-1]
+    # Ratio
+    if abs(ratio_chg) > 0.5:
+        score += 1
+        reasons.append("Gold/Silber")
 
-        high_yest = oil['High'].iloc[-2]
-        low_yest = oil['Low'].iloc[-2]
+    # große Moves
+    for a in results:
+        try:
+            chg = float(a["chg"].replace("%", ""))
+            if abs(chg) > 1.5:
+                score += 1
+                reasons.append(a["name"])
+        except:
+            pass
 
-        # Preisveränderung
-        oil_chg = ((close_today - close_yest)/close_yest)*100
+    if score >= 4:
+        status = "🔴 Unregelmäßig"
+    elif score >= 2:
+        status = "🟡 Auffällig"
+    else:
+        status = "🟢 Normal"
 
-        # Range heute vs gestern
-        range_today = high_today - low_today
-        range_yest = high_yest - low_yest
-
-        range_str = f"{range_today:.2f}"
-        range_delta = range_today - range_yest
-
-        # Interpretation
-        if oil_chg > 1 and range_today > range_yest:
-            oil_text = "Bullisch + hohe Aktivität"
-            oil_al = "success"
-        elif oil_chg < -1 and range_today > range_yest:
-            oil_text = "Bärisch + hohe Aktivität"
-            oil_al = "danger"
-        elif range_today < range_yest:
-            oil_text = "Ruhiger Markt"
-            oil_al = "warning"
-        else:
-            oil_text = "Neutral"
-            oil_al = "warning"
-
-        oil_data = {
-            "price": "{:,.2f}".format(close_today),
-            "chg": f"{oil_chg:+.2f}%",
-            "range": range_str,
-            "interpretation": oil_text,
-            "al": oil_al
-        }
-
-    except Exception as e:
-        print(f"Fehler Öl Analyse: {e}")
-        oil_data = {
-            "price": "",
-            "chg": "",
-            "range": "",
-            "interpretation": "Fehler",
-            "al": "danger"
-        }
-
-    return results, ratio, ratio_chg, ratio_al, oil_data
+    return status, reasons
 
 # =========================
 # HTML
@@ -191,38 +186,46 @@ HTML = """
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Radar Pro</title>
 <style>
 body{background:#0a0a0a;color:#fff;font-family:sans-serif;}
 .card{background:#161616;padding:10px;margin:5px;border-radius:10px;border:2px solid #333;}
-.text-success{color:#39ff14;}
-.text-warning{color:#ffcc00;}
-.text-danger{color:#ff3131;}
-.border-success{border-color:#39ff14;}
-.border-warning{border-color:#ffcc00;}
-.border-danger{border-color:#ff3131;}
 </style>
 </head>
 <body>
 
 <h3>Gschmäckle Radar PRO</h3>
 
-<h4>Gold/Silber Ratio: {{ratio|round(2)}} ({{ratio_chg|round(2)}}%)</h4>
+<h4>Status: {{status}}</h4>
+
+<div class="card">
+{% for r in reasons %}
+- {{r}}<br>
+{% endfor %}
+</div>
+
+<h4>Gold/Silber: {{ratio|round(2)}} ({{ratio_chg|round(2)}}%)</h4>
 
 {% for a in assets %}
-<div class="card border-{{a.al}}">
+<div class="card">
 <b>{{a.name}}</b> {{a.chg}}<br>
 Preis: {{a.p}}<br>
-{{a.interpretation}}
 </div>
 {% endfor %}
 
-<div class="card border-{{oil.al}}">
-<h4>Öl PRO Analyse</h4>
-Preis: {{oil.price}}<br>
-Veränderung: {{oil.chg}}<br>
-Range: {{oil.range}}<br>
-{{oil.interpretation}}
+<div class="card">
+<h4>WTI Öl</h4>
+Preis: {{wti.price}}<br>
+{{wti.chg}}<br>
+Vol: {{wti.vol_now}} vs {{wti.vol_prev}}<br>
+{{wti.vol_trend}}
+</div>
+
+<div class="card">
+<h4>Brent Öl</h4>
+Preis: {{brent.price}}<br>
+{{brent.chg}}<br>
+Vol: {{brent.vol_now}} vs {{brent.vol_prev}}<br>
+{{brent.vol_trend}}
 </div>
 
 </body>
@@ -234,24 +237,22 @@ Range: {{oil.range}}<br>
 # =========================
 @app.route("/")
 def home():
-    assets, ratio, ratio_chg, ratio_al, oil = get_market_data()
+    assets, ratio, ratio_chg, wti, brent = get_market_data()
+    status, reasons = anomaly_check(assets, ratio_chg, wti)
 
-    response = make_response(
-        render_template_string(
-            HTML,
-            assets=assets,
-            ratio=ratio,
-            ratio_chg=ratio_chg,
-            ratio_al=ratio_al,
-            oil=oil
-        )
+    return render_template_string(
+        HTML,
+        assets=assets,
+        ratio=ratio,
+        ratio_chg=ratio_chg,
+        wti=wti,
+        brent=brent,
+        status=status,
+        reasons=reasons
     )
-
-    response.headers["Refresh"] = "30"
-    return response
 
 # =========================
 # START
 # =========================
 if __name__ == "__main__":
-    app.run(debug=True)  # localhost:5000
+    app.run(debug=True)
