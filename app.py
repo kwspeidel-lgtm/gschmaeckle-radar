@@ -8,15 +8,13 @@ app = Flask(__name__)
 # CACHE
 # =========================
 CACHE = {}
-CACHE_TIME = 0  # Cache deaktiviert für sofortige Updates
+CACHE_TIME = 0  # deaktiviert, sofortige Updates
 
 def get_data(sym, period="5d", interval="1h"):
     now = time.time()
     key = f"{sym}_{period}_{interval}"
-
     if key in CACHE and now - CACHE[key]['time'] < CACHE_TIME:
         return CACHE[key]['data']
-
     try:
         data = yf.download(sym, period=period, interval=interval, progress=False)
         if data.empty:
@@ -43,7 +41,7 @@ TICKERS = {
 }
 
 # =========================
-# FORMATIERUNG DEUTSCH
+# Formatierung DE
 # =========================
 def format_de(zahl):
     try:
@@ -62,21 +60,14 @@ def get_market_data():
         h = get_data(sym, "5d")
         if h is None or h.empty or len(h) < 2:
             continue
-
         try:
             p = h['Close'].iloc[-1]
             prev = h['Close'].iloc[-2]
-
-            # Preisformat
             is_fx = sym == "EURUSD=X"
             is_special = sym in ["CL=F", "BZ=F", "BTC-USD"]
 
-            if is_fx:
-                price_str = f"{p:.4f}"
-            else:
-                price_str = format_de(p)
+            price_str = f"{p:.4f}" if is_fx else format_de(p)
 
-            # Volumen nur WTI/Brent/BTC
             rv_str = ""
             if sym in ["CL=F", "BZ=F", "BTC-USD"]:
                 try:
@@ -85,7 +76,6 @@ def get_market_data():
                 except:
                     rv_str = ""
 
-            # Prozentuale Veränderung
             chg = ((p - prev)/prev)*100
             chg_str = f"{chg:+.2f}%"
 
@@ -109,12 +99,10 @@ def get_market_data():
         s = get_data("SI=F", "2d")
         if g is None or s is None:
             raise Exception("Gold oder Silber Daten fehlen")
-
         ratio = g['Close'].iloc[-1] / s['Close'].iloc[-1]
         ratio_prev = g['Close'].iloc[-2] / s['Close'].iloc[-2]
         ratio_chg = ((ratio - ratio_prev)/ratio_prev)*100
         ratio_al = "warning"
-
     except Exception as e:
         print(f"Fehler Gold/Silber Ratio: {e}")
         ratio = 0
@@ -137,7 +125,6 @@ def get_market_data():
                 "al": "danger"
             })
             continue
-
         try:
             close_today = oil['Close'].iloc[-1]
 
@@ -145,7 +132,6 @@ def get_market_data():
             vol_now = int(oil['Volume'].iloc[-1])
             vol_yest = int(oil['Volume'].iloc[-25]) if len(oil) > 25 else int(oil['Volume'].iloc[0])
 
-            # Preis und Volumen formatieren
             price_str = format_de(close_today)
             vol_now_str = f"{vol_now:,}".replace(",", ".")
             vol_yest_str = f"{vol_yest:,}".replace(",", ".")
@@ -224,7 +210,6 @@ Volumen gestern: {{o.vol_yest}}
 @app.route("/")
 def home():
     assets, ratio, ratio_chg, ratio_al, oil = get_market_data()
-
     response = make_response(
         render_template_string(
             HTML,
@@ -235,12 +220,10 @@ def home():
             oil=oil
         )
     )
-
     response.headers["Refresh"] = "30"
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-
     return response
 
 # =========================
