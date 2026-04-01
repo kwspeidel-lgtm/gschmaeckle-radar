@@ -18,36 +18,43 @@ def format_de(v, d=2):
 def get_market_data():
     results = []
     prices = {}
+    
+    # VIX - Fokus auf aktuellen Bereich um 25
+    try:
+        vix_data = yf.download("^VIX", period="1d", interval="1m", progress=False)
+        vix = float(vix_data['Close'].iloc[-1]) if not vix_data.empty else 25.18
+    except: vix = 25.0
+
     try:
         fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
-        eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.08
-    except: eur_usd = 1.08
-    try:
-        vix_df = yf.download("^VIX", period="1d", interval="1m", progress=False)
-        vix = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 15.0
-    except: vix = 15.0
+        eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.0850
+    except: eur_usd = 1.0850
 
     for name, symbol in TICKERS.items():
         try:
             t = yf.Ticker(symbol)
             h = t.history(period="35d")
             if h.empty: continue
-            curr = float(h['Close'].iloc[-1])
-            prices[name] = curr
-            change = ((curr - h['Close'].iloc[-2]) / h['Close'].iloc[-2]) * 100
             
+            # DIE MATHEMATIK: Aktuell vs. Gestern (Schlusskurs)
+            curr = float(h['Close'].iloc[-1])
+            prev = float(h['Close'].iloc[-2]) 
+            change = ((curr - prev) / prev) * 100
+            prices[name] = curr
+            
+            # RVOL Check (21-Tage Schnitt)
             vols = h['Volume'].replace(0, pd.NA).dropna()
-            if len(vols) > 5:
+            rvol = None
+            if len(vols) > 5 and "EURUSD" not in symbol:
                 avg = vols.iloc[-22:-1].mean()
-                r_val = vols.iloc[-1] / avg if avg > 0 else 1.0
-                rvol = round(min(r_val, 10.0), 2)
-            else: rvol = 1.0
+                rvol = round(min(vols.iloc[-1] / avg, 10.0), 2) if avg > 0 else 1.0
 
-            # AMPEL LOGIK
-            if rvol > 3.0 or abs(change) > 3.0: ampel = "red"
-            elif rvol > 1.5: ampel = "yellow"
-            else: ampel = "green"
+            # AMPEL LOGIK (Insider-Scanner & Volatilität)
+            ampel = "green"
+            if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
+            elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
 
+            # 7-TAGE-SPANNE (Balken-Position)
             low_7, high_7 = h['Low'].tail(7).min(), h['High'].tail(7).max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
             
@@ -72,41 +79,60 @@ def index():
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body { background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
-            .header { display: flex; justify-content: space-between; padding: 12px; background: #111; border-radius: 10px; margin-bottom: 10px; border: 1px solid #222; font-size: 0.85em; }
-            .header a { color: #e0e0e0; text-decoration: none; }
+            .header { display: flex; justify-content: space-between; padding: 12px; background: #111; border-radius: 10px; margin-bottom: 12px; border: 1px solid #222; font-size: 0.85em; }
+            .header a { color: #fff; text-decoration: none; font-weight: bold; }
             .card-link { text-decoration: none; color: inherit; display: block; }
-            .card { background: #111; padding: 15px; border-radius: 12px; margin-bottom: 8px; border-left: 6px solid #333; position: relative; }
+            .card { background: #111; padding: 15px; border-radius: 12px; margin-bottom: 10px; border-left: 6px solid #333; }
             
             /* Ampel-Farben */
-            .border-red { border-left-color: #ff5252 !important; animation: blink 2s infinite; }
+            .border-red { border-left-color: #ff5252 !important; }
             .border-yellow { border-left-color: #ffd740 !important; }
             .border-green { border-left-color: #4caf50 !important; }
             
-            @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+            .bg-red { background-color: #ff5252 !important; }
+            .bg-yellow { background-color: #ffd740 !important; }
+            .bg-green { background-color: #4caf50 !important; }
+            
+            /* Alarm-Blinken bei Rot */
+            .card.border-red { animation: blink 2s infinite; }
+            @keyframes blink { 0%, 100% { border-left-color: #ff5252; } 50% { border-left-color: #333; } }
             
             .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
             .pos { color: #4caf50; } .neg { color: #ff5252; }
-            .rvol-tag { font-size: 0.7em; padding: 2px 5px; background: #222; border-radius: 4px; border: 1px solid #333; }
-            .range-bg { background: #222; height: 3px; border-radius: 2px; margin: 10px 0; }
-            .range-bar { background: #007aff; height: 100%; }
+            .rvol-tag { font-size: 0.7em; padding: 2px 6px; background: #222; border-radius: 4px; border: 1px solid #333; color: #aaa; }
+            
+            /* Balken: Doppelte Stärke (6px) & Ampel-Farbe */
+            .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; overflow: hidden; }
+            .range-bar { height: 100%; transition: width 0.6s ease; }
+            
+            .footer { text-align: center; font-size: 0.65em; color: #444; margin-top: 25px; font-weight: bold; }
         </style>
     </head>
     <body>
         <div class="header">
-            <a href="https://finance.yahoo.com/quote/%5EVIX" target="_blank">VIX: <b>{{ vix }}</b></a>
-            <span>G/S: <b>{{ gs_ratio }}</b></span>
-            <a href="https://finance.yahoo.com/quote/EURUSD=X" target="_blank">€/$: <b>{{ eur_usd }}</b></a>
+            <a href="https://finance.yahoo.com/quote/%5EVIX" target="_blank">VIX: {{ vix }}</a>
+            <span style="color: #aaa;">G/S: <b style="color: #fff;">{{ gs_ratio }}</b></span>
+            <a href="https://finance.yahoo.com/quote/EURUSD=X" target="_blank">€/$: {{ eur_usd }}</a>
         </div>
+        
         {% for item in data %}
         <a href="https://finance.yahoo.com/quote/{{ item.symbol }}" target="_blank" class="card-link">
             <div class="card border-{{ item.ampel }}">
-                <div class="row"><span style="color:#fff; font-weight:bold;">{{ item.name }}</span><span>{{ item.price }}</span></div>
-                <div class="row"><span class="{{ 'pos' if item.is_pos else 'neg' }}">{{ item.change }}%</span><span class="rvol-tag">RVOL: {{ item.rvol }}</span></div>
-                <div class="range-bg"><div class="range-bar" style="width: {{ item.range_pos }}%;"></div></div>
+                <div class="row"><span style="color:#fff; font-weight:bold;">{{ item.name }}</span><span style="font-size: 1.1em; font-weight: bold;">{{ item.price }}</span></div>
+                <div class="row">
+                    <span class="{{ 'pos' if item.is_pos else 'neg' }}" style="font-weight: bold;">{{ item.change }}%</span>
+                    {% if item.rvol %}<span class="rvol-tag">RVOL: {{ item.rvol }}</span>{% endif %}
+                </div>
+                <div class="range-bg">
+                    <div class="range-bar bg-{{ item.ampel }}" style="width: {{ item.range_pos }}%;"></div>
+                </div>
             </div>
         </a>
         {% endfor %}
-        <div style="text-align:center; font-size:0.6em; color:#444; margin-top:20px;">Insider-Scanner Aktiv ● Stand: {{ now.strftime('%H:%M:%S') }}</div>
+        
+        <div class="footer">
+            INSIDER-RADAR AKTIV ● {{ now.strftime('%H:%M:%S') }}
+        </div>
     </body>
     </html>
     """
