@@ -1,10 +1,11 @@
 import pandas as pd
 import yfinance as yf
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, jsonify
 import datetime
 
 app = Flask(__name__)
 
+# Dein Ticker-Setup
 TICKERS = {
     "Öl WTI": "CL=F", "Öl Brent": "BZ=F", "Gold": "GC=F",
     "Silber": "SI=F", "Kupfer": "HG=F", "S&P 500": "^GSPC",
@@ -19,10 +20,9 @@ def get_market_data():
     results = []
     prices = {}
     
-    # LIVE VIX ABRUF
+    # Live VIX
     try:
-        vix_ticker = yf.Ticker("^VIX")
-        vix_h = vix_ticker.history(period="2d")
+        vix_h = yf.download("^VIX", period="2d", interval="1m", progress=False)
         vix = float(vix_h['Close'].iloc[-1]) if not vix_h.empty else 25.0
     except: vix = 25.0
 
@@ -32,11 +32,13 @@ def get_market_data():
             h = t.history(period="35d")
             if h.empty: continue
             
+            # KNALLHARTE BERECHNUNG (WTI/Brent Synchron)
             curr = float(h['Close'].iloc[-1])
             prev = float(h['Close'].iloc[-2]) 
             change = ((curr - prev) / prev) * 100
             prices[name] = curr
             
+            # RVOL
             vols = h['Volume'].replace(0, pd.NA).dropna()
             rvol = None
             if len(vols) > 5 and "EURUSD" not in symbol:
@@ -54,7 +56,7 @@ def get_market_data():
                 'name': name, 'symbol': symbol, 'ampel': ampel,
                 'price': format_de(curr, 2 if "EURUSD" not in symbol else 4),
                 'change': format_de(change, 2), 'rvol': rvol, 'range_pos': round(range_pos, 0),
-                'is_pos': change >= 0
+                'is_pos': change >= 0, 'raw_change': change
             })
         except: continue
     
@@ -71,56 +73,48 @@ def index():
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body { background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
-            .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; font-size: 1em; }
-            .header a { color: #fff; text-decoration: none; font-weight: bold; }
-            .card-link { text-decoration: none; color: inherit; display: block; }
+            .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; font-size: 0.9em; }
+            .gemini-btn { background: linear-gradient(45deg, #f1c40f, #f39c12); color: #000; border: none; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 15px; }
             .card { background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; }
-            
             .border-red { border-left-color: #ff5252 !important; animation: blink 2s infinite; }
             .border-yellow { border-left-color: #ffd740 !important; }
             .border-green { border-left-color: #4caf50 !important; }
-            
-            .bg-red { background-color: #ff5252 !important; }
-            .bg-yellow { background-color: #ffd740 !important; }
-            .bg-green { background-color: #4caf50 !important; }
-            
             @keyframes blink { 0%, 100% { border-left-color: #ff5252; } 50% { border-left-color: #222; } }
-            
             .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
             .pos { color: #4caf50; } .neg { color: #ff5252; }
-            
             .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #333; border-radius: 6px; border: 1px solid #555; color: #fff; }
-            
-            .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; overflow: hidden; }
-            .range-bar { height: 100%; transition: width 0.6s ease; }
-            
-            .footer { text-align: center; font-size: 0.65em; color: #444; margin-top: 30px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+            .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; }
+            .range-bar { height: 100%; border-radius: 3px; }
+            .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
         </style>
     </head>
     <body>
         <div class="header">
-            <a href="https://finance.yahoo.com/quote/%5EVIX" target="_blank">VIX: {{ vix }}</a>
-            <span style="color: #666;">G/S RATIO: <b style="color: #fff;">{{ gs_ratio }}</b></span>
+            <span>VIX: <b>{{ vix }}</b></span>
+            <span>G/S RATIO: <b>{{ gs_ratio }}</b></span>
         </div>
         
+        <button class="gemini-btn" onclick="analyzeMarkets()">GEMINI INSIDER ANALYSE 🚀</button>
+
         {% for item in data %}
-        <a href="https://finance.yahoo.com/quote/{{ item.symbol }}" target="_blank" class="card-link">
+        <a href="https://finance.yahoo.com/quote/{{ item.symbol }}" target="_blank" style="text-decoration:none; color:inherit;">
             <div class="card border-{{ item.ampel }}">
-                <div class="row"><span style="color:#fff; font-weight:bold;">{{ item.name }}</span><span style="font-size: 1.15em; font-weight: 900;">{{ item.price }}</span></div>
+                <div class="row"><span style="font-weight:bold; color:#fff;">{{ item.name }}</span><span style="font-weight:900;">{{ item.price }}</span></div>
                 <div class="row">
-                    <span class="{{ 'pos' if item.is_pos else 'neg' }}" style="font-weight: 800; font-size: 1em;">{{ item.change }}%</span>
+                    <span class="{{ 'pos' if item.is_pos else 'neg' }}" style="font-weight:800;">{{ item.change }}%</span>
                     {% if item.rvol %}<span class="rvol-tag">RVOL: {{ item.rvol }}</span>{% endif %}
                 </div>
-                <div class="range-bg">
-                    <div class="range-bar bg-{{ item.ampel }}" style="width: {{ item.range_pos }}%;"></div>
-                </div>
+                <div class="range-bg"><div class="range-bar bg-{{ item.ampel }}" style="width:{{ item.range_pos }}%;"></div></div>
             </div>
         </a>
         {% endfor %}
-        
-        <div class="footer">
-            Insider-Radar Aktiv ● Stand {{ now.strftime('%H:%M:%S') }}
-        </div>
+
+        <script>
+            function analyzeMarkets() {
+                alert("Daten werden an Gemini gesendet... (Shortcut 2 Trigger)");
+                // Hier könnte ein Fetch-Call zu deiner Gemini-API-Route stehen
+            }
+        </script>
     </body>
     </html>
     """
