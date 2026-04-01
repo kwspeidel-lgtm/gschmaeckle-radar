@@ -7,70 +7,93 @@ app = Flask(__name__)
 
 TICKERS = {
     "Bitcoin": "BTC-USD",
-    "Öl WTI": "CL=F", "Öl Brent": "BZ=F", "Gold": "GC=F",
-    "Silber": "SI=F", "Kupfer": "HG=F", "S&P 500": "^GSPC",
-    "DAX": "^GDAXI", "Nikkei 225": "^N225", "Hang Seng": "^HSI", "EUR/USD": "EURUSD=X"
+    "Öl WTI": "CL=F", "Öl Brent": "BZ=F",
+    "Gold": "GC=F", "Silber": "SI=F", "Kupfer": "HG=F",
+    "S&P 500": "^GSPC", "DAX": "^GDAXI", "Nikkei 225": "^N225",
+    "Hang Seng": "^HSI", "EUR/USD": "EURUSD=X"
 }
 
 def format_de(v, d=2):
-    try: return f"{v:,.{d}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return str(v)
+    try: 
+        return f"{v:,.{d}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except: 
+        return str(v)
+
+def calc_rvol(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        hist = t.history(period="5d")
+        if len(hist) < 2:
+            return None
+        vol_today = hist['Volume'].iloc[-1]
+        vol_avg = hist['Volume'].iloc[-4:-1].mean() if len(hist) >= 4 else hist['Volume'].iloc[:-1].mean()
+        if vol_avg == 0 or vol_avg is None:
+            return None
+        return round(vol_today / vol_avg, 2)
+    except:
+        return None
 
 def get_market_data():
     results = []
     prices = {}
-    
+
+    # VIX holen
     try:
         vix_t = yf.Ticker("^VIX")
         vix = vix_t.fast_info['last_price']
-    except: vix = 25.0
+    except:
+        vix = 25.0
 
     for name, symbol in TICKERS.items():
         try:
             t = yf.Ticker(symbol)
-            info = t.info 
-            
-            # 1. Preis & Offizielle Yahoo-Veränderung
+            info = t.info
+            # Preis & Veränderung
             curr = info.get('regularMarketPrice') or t.fast_info['last_price']
             change = info.get('regularMarketChangePercent', 0.0)
             prices[name] = curr
-            
-            # 2. RVOL via Yahoo-Durchschnitt (Kein 10.0 Quatsch mehr)
+
+            # RVOL nur bei Rohstoffen & Öl
             rvol = None
-            if name not in ["Bitcoin", "EUR/USD"]:
-                current_vol = info.get('regularMarketVolume') or info.get('volume')
-                avg_vol = info.get('averageVolume10days') or info.get('averageVolume')
-                
-                if current_vol and avg_vol and avg_vol > 0:
-                    rvol = round(min(current_vol / avg_vol, 10.0), 2)
-                else:
-                    # Minimal-Fallback
-                    h = t.history(period="5d")
-                    if len(h) >= 2: rvol = 1.0
+            if name not in ["Bitcoin", "EUR/USD", "S&P 500", "DAX", "Nikkei 225", "Hang Seng"]:
+                rvol = calc_rvol(symbol)
 
-            # 3. Ampel & Range
+            # Ampel / Signal (Shortcut-Style)
             ampel = "green"
-            if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
-            elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
+            if rvol is not None:
+                if rvol >= 1.2 and change > 0: ampel = "green"       # Bullish
+                elif rvol >= 1.2 and change < 0: ampel = "red"       # Distribution
+                elif rvol < 0.8: ampel = "yellow"                    # schwach
+                else: ampel = "neutral"
 
+            # Range 7 Tage
             h_short = t.history(period="7d")
             low_7, high_7 = h_short['Low'].min(), h_short['High'].max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
-            
+
             results.append({
-                'name': name, 'symbol': symbol, 'ampel': ampel,
+                'name': name,
+                'symbol': symbol,
+                'ampel': ampel,
                 'price': format_de(curr, 2 if "USD" not in symbol and "EUR" not in symbol else (0 if "BTC" in symbol else 4)),
-                'change': format_de(change, 2), 'rvol': rvol, 'range_pos': round(range_pos, 0),
+                'change': format_de(change, 2),
+                'rvol': rvol,
+                'range_pos': round(range_pos, 0),
                 'is_pos': change >= 0
             })
-        except: continue
-    
+        except:
+            continue
+
+    # Gold/Silber Ratio
     gs_ratio = format_de(prices.get("Gold", 0) / prices.get("Silber", 1), 2) if "Gold" in prices and "Silber" in prices else "N/A"
+
     return results, format_de(vix, 2), gs_ratio
 
 @app.route('/')
 def index():
     data, vix, gs_ratio = get_market_data()
+
+    # Shortcut-Block für GPT Shortcut 2
     ki_block = f"RAW_DATA|VIX:{vix}|GS:{gs_ratio}"
     for d in data:
         rv = d['rvol'] if d['rvol'] else "0"
