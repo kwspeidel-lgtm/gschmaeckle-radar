@@ -1,124 +1,150 @@
-from flask import Flask, render_template_string, make_response
-import yfinance as yf
 import pandas as pd
-from datetime import datetime
+import yfinance as yf
+from flask import Flask, render_template_string
+import datetime
 
 app = Flask(__name__)
 
-# ==========================================
-# TRUMP-RELEVANTE TICKER & RVOL LOGIK
-# ==========================================
+# DEINE TICKER-LISTE (Anpassbar)
+TICKERS = {
+    "Öl (WTI)": "CL=F",
+    "Gold": "GC=F",
+    "Silber": "SI=F",
+    "Kupfer": "HG=F",
+    "S&P 500": "^GSPC",
+    "DAX": "^GDAXI",
+    "Nikkei 225": "^N225",
+    "Hang Seng": "^HSI",
+    "EUR/USD": "EURUSD=X"
+}
+
 def get_market_data():
-    # Nur diese Werte bekommen den Insider-Scanner (RVOL)
-    TRUMP_SENSITIVE = {
-        "WTI Öl": "CL=F",
-        "Gold (USD)": "GC=F",
-        "Nasdaq 100": "^IXIC",
-        "S&P 500": "^GSPC",
-        "Kupfer": "HG=F"
-    }
-    # Normale Beobachtungswerte (Ohne Blink-Alarm)
-    WATCHLIST = {
-        "DAX": "^GDAXI",
-        "EUR/USD": "EURUSD=X"
-    }
-    
     results = []
     
-    # EUR/USD für Umrechnung holen
-    fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
-    eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.0
+    # 1. EUR/USD & VIX (Sicherheits-Check)
+    try:
+        fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
+        eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.08
+    except:
+        eur_usd = 1.08
 
-    # 1. Scanner für Gschmäckle-Werte
-    for name, sym in TRUMP_SENSITIVE.items():
+    try:
+        vix_df = yf.download("^VIX", period="1d", interval="1m", progress=False)
+        vix = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 15.0
+    except:
+        vix = 15.0
+
+    # 2. Daten für jeden Ticker holen
+    for name, symbol in TICKERS.items():
         try:
-            df = yf.download(sym, period="5d", interval="30m", progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="7d")
             
-            curr_price = float(df['Close'].iloc[-1])
-            prev_close = float(df['Close'].iloc[-2])
-            chg_pct = ((curr_price - prev_close) / prev_close) * 100
+            if hist.empty:
+                continue
+
+            current_price = float(hist['Close'].iloc[-1])
+            prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
+            change_pct = ((current_price - prev_close) / prev_close) * 100
             
-            # RVOL Berechnung
-            curr_vol = float(df['Volume'].iloc[-1])
-            avg_vol = float(df['Volume'].mean())
-            rvol = curr_vol / avg_vol if avg_vol > 0 else 0
-            
-            price_display = f"{curr_price:,.2f}"
-            if "Gold" in name:
-                price_display = f"${curr_price:,.2f} | €{curr_price/eur_usd:,.2f}"
+            # RVOL Logik (Relatives Volumen)
+            avg_vol = hist['Volume'].iloc[:-1].mean()
+            curr_vol = hist['Volume'].iloc[-1]
+            rvol = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+
+            # 7-Tage-Spanne (Hoch/Tief)
+            low_7d = hist['Low'].min()
+            high_7d = hist['High'].max()
+            range_pos = ((current_price - low_7d) / (high_7d - low_7d)) * 100 if (high_7d - low_7d) > 0 else 50
+
+            # News (nur die Top 3 Schlagzeilen)
+            news_items = []
+            try:
+                raw_news = ticker.news[:3]
+                for n in raw_news:
+                    news_items.append({'title': n.get('title'), 'link': n.get('link')})
+            except:
+                news_items = []
 
             results.append({
-                "name": name, "price": price_display, "chg": f"{chg_pct:+.2f}%",
-                "color": "#00ffcc" if chg_pct >= 0 else "#ff3131",
-                "rvol": round(rvol, 2),
-                "alert": rvol > 3.0, # NUR HIER BLINKT ES
-                "is_monitored": True
+                'name': name,
+                'symbol': symbol,
+                'price': round(current_price, 2),
+                'change': round(change_pct, 2),
+                'rvol': rvol,
+                'range_pos': round(range_pos, 0),
+                'news': news_items
             })
-        except: continue
+        except Exception as e:
+            print(f"Fehler bei {name}: {e}")
+            continue
 
-    # 2. Einfache Watchlist (Kein RVOL nötig)
-    for name, sym in WATCHLIST.items():
-        try:
-            df = yf.download(sym, period="1d", progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            curr_price = float(df['Close'].iloc[-1])
-            results.append({
-                "name": name, "price": f"{curr_price:,.2f}", "chg": "", 
-                "color": "#eee", "rvol": None, "alert": False, "is_monitored": False
-            })
-        except: continue
-        
-    return results
+    return results, vix, eur_usd
 
-# ==========================================
-# HTML MIT GEZIELTEM ALARM
-# ==========================================
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { background:#0a0a0a; color:#eee; font-family:sans-serif; padding:15px; }
-        .card { background:#161616; padding:15px; margin-bottom:12px; border-radius:10px; border-left: 5px solid #444; }
-        .chg-val { float: right; font-weight: bold; }
-        .rvol-tag { font-size: 0.75em; color: #666; margin-top: 5px; display: block; }
-        .insider-alert { 
-            border-left-color: #ff0000; 
-            background: linear-gradient(90deg, #330000, #161616);
-            animation: pulse 1s infinite;
-        }
-        @keyframes pulse { 50% { background: #440000; } }
-        .alert-text { color: #ff0000; font-weight: bold; font-size: 0.7em; }
-    </style>
-</head>
-<body>
-    <h2>🔍 Trump-Montag Radar</h2>
-    {% for a in data %}
-    <div class="card {% if a.alert %}insider-alert{% endif %}">
-        <span class="chg-val" style="color:{{a.color}}">{{a.chg}}</span>
-        <b>{{a.name}}</b><br>
-        <span>{{a.price}}</span>
-        {% if a.is_monitored %}
-        <span class="rvol-tag">
-            {% if a.alert %}<span class="alert-text">⚠️ INSIDER-MOVE? </span>{% endif %}
-            RVOL: {{a.rvol}}
-        </span>
-        {% endif %}
-    </div>
-    {% endfor %}
-</body>
-</html>
-"""
+@app.route('/')
+def index():
+    data, vix, eur_usd = get_market_data()
+    
+    # HTML-Template mit modernem Dark-Mode & Blink-Effekt bei RVOL > 3
+    html = """
+    <!DOCTYPE html>
+    <html lang="de">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Gschmäckle-Radar</title>
+        <style>
+            body { background: #121212; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
+            .header { display: flex; justify-content: space-between; padding: 10px; background: #1e1e1e; border-radius: 8px; margin-bottom: 15px; }
+            .card { background: #1e1e1e; padding: 15px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #333; }
+            .alarm { border-left: 5px solid #ff5252; animation: blink 2s infinite; }
+            @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+            .price { font-size: 1.2em; font-weight: bold; }
+            .pos { color: #4caf50; } .neg { color: #ff5252; }
+            .news-box { font-size: 0.85em; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333; }
+            .news-link { color: #81d4fa; text-decoration: none; display: block; margin-bottom: 5px; }
+            .range-bg { background: #333; height: 8px; border-radius: 4px; margin-top: 5px; width: 100%; }
+            .range-bar { background: #81d4fa; height: 100%; border-radius: 4px; }
+            .footer { font-size: 0.7em; color: #666; text-align: center; margin-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <span>VIX: <b>{{ vix }}</b></span>
+            <span>EUR/USD: <b>{{ eur_usd }}</b></span>
+        </div>
 
-@app.route("/")
-def home():
-    data = get_market_data()
-    resp = make_response(render_template_string(HTML, data=data))
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    resp.headers["Refresh"] = "45"
-    return resp
+        {% for item in data %}
+        <div class="card {{ 'alarm' if item.rvol > 3 else '' }}">
+            <div style="display: flex; justify-content: space-between;">
+                <b>{{ item.name }}</b>
+                <span class="price">{{ item.price }}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
+                <span class="{{ 'pos' if item.change >= 0 else 'neg' }}">{{ item.change }}%</span>
+                <span>RVOL: <b>{{ item.rvol }}</b></span>
+            </div>
+            
+            <div class="range-bg"><div class="range-bar" style="width: {{ item.range_pos }}%;"></div></div>
 
-if __name__ == "__main__":
-    app.run(debug=True)
+            {% if item.news %}
+            <div class="news-box">
+                {% for n in item.news %}
+                <a class="news-link" href="{{ n.link }}" target="_blank">📰 {{ n.title }}</a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <div class="footer">
+            Privates Experiment. Keine Anlageberatung. Daten ohne Gewähr.<br>
+            Stand: {{ now.strftime('%H:%M:%S') }}
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(html, data=data, vix=round(vix, 2), eur_usd=round(eur_usd, 4), now=datetime.datetime.now())
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
