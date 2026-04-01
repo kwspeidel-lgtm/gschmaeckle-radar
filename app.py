@@ -5,7 +5,7 @@ import datetime
 
 app = Flask(__name__)
 
-# DEINE TICKER-LISTE (Anpassbar)
+# DEINE TICKER-LISTE
 TICKERS = {
     "Öl (WTI)": "CL=F",
     "Gold": "GC=F",
@@ -21,71 +21,61 @@ TICKERS = {
 def get_market_data():
     results = []
     
-    # 1. EUR/USD & VIX (Sicherheits-Check)
+    # 1. Gemeinsamer Abruf für Header-Daten (VIX, FX, Gold/Silber Ratio)
+    all_symbols = list(TICKERS.values()) + ["^VIX", "EURUSD=X"]
     try:
-        fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
-        eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.08
+        data_all = yf.download(all_symbols, period="2d", interval="1d", progress=False)
+        current_prices = data_all['Close'].iloc[-1]
+        
+        eur_usd = round(float(current_prices.get('EURUSD=X', 1.0820)), 4)
+        vix = round(float(current_prices.get('^VIX', 15.50)), 2)
+        
+        # Gold-Silber-Ratio Berechnung
+        gold_p = float(current_prices.get('GC=F', 0))
+        silver_p = float(current_prices.get('SI=F', 0))
+        gs_ratio = round(gold_p / silver_p, 2) if silver_p > 0 else "N/A"
     except:
-        eur_usd = 1.08
+        eur_usd, vix, gs_ratio = 1.0820, 15.50, "N/A"
 
-    try:
-        vix_df = yf.download("^VIX", period="1d", interval="1m", progress=False)
-        vix = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 15.0
-    except:
-        vix = 15.0
-
-    # 2. Daten für jeden Ticker holen
+    # 2. Details pro Ticker (RVOL, Change, News)
     for name, symbol in TICKERS.items():
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="7d")
-            
-            if hist.empty:
-                continue
+            t = yf.Ticker(symbol)
+            hist = t.history(period="7d")
+            if hist.empty: continue
 
-            current_price = float(hist['Close'].iloc[-1])
-            prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
-            change_pct = ((current_price - prev_close) / prev_close) * 100
+            price = hist['Close'].iloc[-1]
+            change = ((price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
             
-            # RVOL Logik (Relatives Volumen)
             avg_vol = hist['Volume'].iloc[:-1].mean()
-            curr_vol = hist['Volume'].iloc[-1]
-            rvol = round(curr_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+            rvol = round(hist['Volume'].iloc[-1] / avg_vol, 2) if avg_vol > 0 else 0
 
-            # 7-Tage-Spanne (Hoch/Tief)
-            low_7d = hist['Low'].min()
-            high_7d = hist['High'].max()
-            range_pos = ((current_price - low_7d) / (high_7d - low_7d)) * 100 if (high_7d - low_7d) > 0 else 50
+            low_7d, high_7d = hist['Low'].min(), hist['High'].max()
+            range_pos = ((price - low_7d) / (high_7d - low_7d)) * 100 if (high_7d - low_7d) > 0 else 50
 
-            # News (nur die Top 3 Schlagzeilen)
-            news_items = []
+            # News-Fix: Keine "None" Anzeigen
+            news_list = []
             try:
-                raw_news = ticker.news[:3]
-                for n in raw_news:
-                    news_items.append({'title': n.get('title'), 'link': n.get('link')})
-            except:
-                news_items = []
+                for n in t.news[:3]:
+                    title = n.get('title')
+                    link = n.get('link')
+                    if title and link:
+                        news_list.append({'title': title, 'link': link})
+            except: pass
 
             results.append({
-                'name': name,
-                'symbol': symbol,
-                'price': round(current_price, 2),
-                'change': round(change_pct, 2),
-                'rvol': rvol,
-                'range_pos': round(range_pos, 0),
-                'news': news_items
+                'name': name, 'price': round(price, 2), 'change': round(change, 2),
+                'rvol': rvol, 'range_pos': round(range_pos, 0), 'news': news_list
             })
-        except Exception as e:
-            print(f"Fehler bei {name}: {e}")
-            continue
-
-    return results, vix, eur_usd
+        except: continue
+        
+    return results, vix, eur_usd, gs_ratio
 
 @app.route('/')
 def index():
-    data, vix, eur_usd = get_market_data()
+    data, vix, eur_usd, gs_ratio = get_market_data()
+    now = datetime.datetime.now()
     
-    # HTML-Template mit modernem Dark-Mode & Blink-Effekt bei RVOL > 3
     html = """
     <!DOCTYPE html>
     <html lang="de">
@@ -94,57 +84,50 @@ def index():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Gschmäckle-Radar</title>
         <style>
-            body { background: #121212; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
-            .header { display: flex; justify-content: space-between; padding: 10px; background: #1e1e1e; border-radius: 8px; margin-bottom: 15px; }
-            .card { background: #1e1e1e; padding: 15px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #333; }
-            .alarm { border-left: 5px solid #ff5252; animation: blink 2s infinite; }
-            @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-            .price { font-size: 1.2em; font-weight: bold; }
+            body { background: #121212; color: #e0e0e0; font-family: sans-serif; margin: 5px; }
+            .header { display: flex; justify-content: space-between; padding: 12px; background: #1e1e1e; border-radius: 8px; margin-bottom: 10px; border-bottom: 2px solid #444; font-size: 0.9em; }
+            .card { background: #1e1e1e; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #444; position: relative; }
+            .alarm { border-left-color: #ff5252; box-shadow: 0 0 15px rgba(255,82,82,0.2); animation: pulse 2s infinite; }
+            @keyframes pulse { 0% { border-left-width: 4px; } 50% { border-left-width: 8px; } 100% { border-left-width: 4px; } }
             .pos { color: #4caf50; } .neg { color: #ff5252; }
-            .news-box { font-size: 0.85em; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333; }
-            .news-link { color: #81d4fa; text-decoration: none; display: block; margin-bottom: 5px; }
-            .range-bg { background: #333; height: 8px; border-radius: 4px; margin-top: 5px; width: 100%; }
-            .range-bar { background: #81d4fa; height: 100%; border-radius: 4px; }
-            .footer { font-size: 0.7em; color: #666; text-align: center; margin-top: 20px; }
+            .range-bg { background: #333; height: 5px; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+            .range-bar { background: #03a9f4; height: 100%; border-radius: 3px; }
+            .news-link { color: #81d4fa; text-decoration: none; display: block; font-size: 0.82em; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 2px solid #03a9f4; padding-left: 5px; }
+            .footer { text-align: center; font-size: 0.7em; color: #555; margin-top: 15px; }
         </style>
     </head>
     <body>
         <div class="header">
             <span>VIX: <b>{{ vix }}</b></span>
+            <span>G/S Ratio: <b style="color:#ffb74d">{{ gs_ratio }}</b></span>
             <span>EUR/USD: <b>{{ eur_usd }}</b></span>
         </div>
 
         {% for item in data %}
         <div class="card {{ 'alarm' if item.rvol > 3 else '' }}">
-            <div style="display: flex; justify-content: space-between;">
-                <b>{{ item.name }}</b>
-                <span class="price">{{ item.price }}</span>
+            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size: 1.1em;">
+                <span>{{ item.name }}</span><span>{{ item.price }}</span>
             </div>
-            <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
-                <span class="{{ 'pos' if item.change >= 0 else 'neg' }}">{{ item.change }}%</span>
-                <span>RVOL: <b>{{ item.rvol }}</b></span>
+            <div style="display:flex; justify-content:space-between; font-size:0.95em; margin-top:5px;">
+                <span class="{{ 'pos' if item.change >= 0 else 'neg' }}">{{ '+' if item.change > 0 }}{{ item.change }}%</span>
+                <span>RVOL: <b style="{{ 'color:#ff5252; font-size:1.1em;' if item.rvol > 3 else '' }}">{{ item.rvol }}</b></span>
             </div>
             
             <div class="range-bg"><div class="range-bar" style="width: {{ item.range_pos }}%;"></div></div>
 
-            {% if item.news %}
-            <div class="news-box">
-                {% for n in item.news %}
-                <a class="news-link" href="{{ n.link }}" target="_blank">📰 {{ n.title }}</a>
-                {% endfor %}
-            </div>
-            {% endif %}
+            {% for n in item.news %}
+                <a class="news-link" href="{{ n.link }}" target="_blank">🗞️ {{ n.title }}</a>
+            {% endfor %}
         </div>
         {% endfor %}
 
         <div class="footer">
-            Privates Experiment. Keine Anlageberatung. Daten ohne Gewähr.<br>
-            Stand: {{ now.strftime('%H:%M:%S') }}
+            Gschmäckle-Radar Live | Stand: {{ now.strftime('%H:%M:%S') }}
         </div>
     </body>
     </html>
     """
-    return render_template_string(html, data=data, vix=round(vix, 2), eur_usd=round(eur_usd, 4), now=datetime.datetime.now())
+    return render_template_string(html, data=data, vix=vix, eur_usd=eur_usd, gs_ratio=gs_ratio, now=now)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
