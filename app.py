@@ -1,11 +1,10 @@
 import pandas as pd
 import yfinance as yf
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string
 import datetime
 
 app = Flask(__name__)
 
-# Dein Ticker-Setup
 TICKERS = {
     "Öl WTI": "CL=F", "Öl Brent": "BZ=F", "Gold": "GC=F",
     "Silber": "SI=F", "Kupfer": "HG=F", "S&P 500": "^GSPC",
@@ -20,7 +19,6 @@ def get_market_data():
     results = []
     prices = {}
     
-    # Live VIX
     try:
         vix_h = yf.download("^VIX", period="2d", interval="1m", progress=False)
         vix = float(vix_h['Close'].iloc[-1]) if not vix_h.empty else 25.0
@@ -29,17 +27,18 @@ def get_market_data():
     for name, symbol in TICKERS.items():
         try:
             t = yf.Ticker(symbol)
+            # 5 Tage reichen für die Korrektur, 35 für RVOL
             h = t.history(period="35d")
-            if h.empty: continue
+            if len(h) < 2: continue
             
-            # KNALLHARTE BERECHNUNG (WTI/Brent Synchron)
-            curr = float(h['Close'].iloc[-1])
-            prev = float(h['Close'].iloc[-2]) 
+            # KORREKTUR BRENT / WTI: Wir nehmen die letzten zwei validen Zeilen
+            valid_h = h.dropna(subset=['Close'])
+            curr = float(valid_h['Close'].iloc[-1])
+            prev = float(valid_h['Close'].iloc[-2]) 
             change = ((curr - prev) / prev) * 100
             prices[name] = curr
             
-            # RVOL
-            vols = h['Volume'].replace(0, pd.NA).dropna()
+            vols = valid_h['Volume'].replace(0, pd.NA).dropna()
             rvol = None
             if len(vols) > 5 and "EURUSD" not in symbol:
                 avg = vols.iloc[-22:-1].mean()
@@ -49,14 +48,14 @@ def get_market_data():
             if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
             elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
 
-            low_7, high_7 = h['Low'].tail(7).min(), h['High'].tail(7).max()
+            low_7, high_7 = valid_h['Low'].tail(7).min(), valid_h['High'].tail(7).max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
             
             results.append({
                 'name': name, 'symbol': symbol, 'ampel': ampel,
                 'price': format_de(curr, 2 if "EURUSD" not in symbol else 4),
                 'change': format_de(change, 2), 'rvol': rvol, 'range_pos': round(range_pos, 0),
-                'is_pos': change >= 0, 'raw_change': change
+                'is_pos': change >= 0
             })
         except: continue
     
@@ -66,6 +65,12 @@ def get_market_data():
 @app.route('/')
 def index():
     data, vix, gs_ratio = get_market_data()
+    # KI-BLOCK GENERIERUNG (Kompakt für Gemini)
+    ki_block = f"RAW_DATA|VIX:{vix}|GS:{gs_ratio}"
+    for d in data:
+        rv = d['rvol'] if d['rvol'] else "0"
+        ki_block += f"|{d['name']}:{d['price']}:{d['change']}%:RV{rv}"
+
     html = """
     <!DOCTYPE html>
     <html>
@@ -73,16 +78,14 @@ def index():
         <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body { background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
-            .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; font-size: 0.9em; }
-            .gemini-btn { background: linear-gradient(45deg, #f1c40f, #f39c12); color: #000; border: none; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 15px; }
+            .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 10px; border: 1px solid #222; }
+            .gemini-btn { background: #f1c40f; color: #000; border: none; padding: 12px; border-radius: 10px; font-weight: 900; width: 100%; margin-bottom: 15px; cursor: pointer; }
             .card { background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; }
-            .border-red { border-left-color: #ff5252 !important; animation: blink 2s infinite; }
+            .border-red { border-left-color: #ff5252 !important; }
             .border-yellow { border-left-color: #ffd740 !important; }
             .border-green { border-left-color: #4caf50 !important; }
-            @keyframes blink { 0%, 100% { border-left-color: #ff5252; } 50% { border-left-color: #222; } }
-            .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-            .pos { color: #4caf50; } .neg { color: #ff5252; }
-            .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #333; border-radius: 6px; border: 1px solid #555; color: #fff; }
+            .row { display: flex; justify-content: space-between; align-items: center; }
+            .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #333; border-radius: 6px; color: #fff; }
             .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; }
             .range-bar { height: 100%; border-radius: 3px; }
             .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
@@ -91,34 +94,34 @@ def index():
     <body>
         <div class="header">
             <span>VIX: <b>{{ vix }}</b></span>
-            <span>G/S RATIO: <b>{{ gs_ratio }}</b></span>
+            <span>G/S: <b>{{ gs_ratio }}</b></span>
         </div>
         
-        <button class="gemini-btn" onclick="analyzeMarkets()">GEMINI INSIDER ANALYSE 🚀</button>
+        <button class="gemini-btn" onclick="copyKI()">SHORTCUT 2 ANALYSE 🚀</button>
 
         {% for item in data %}
-        <a href="https://finance.yahoo.com/quote/{{ item.symbol }}" target="_blank" style="text-decoration:none; color:inherit;">
-            <div class="card border-{{ item.ampel }}">
-                <div class="row"><span style="font-weight:bold; color:#fff;">{{ item.name }}</span><span style="font-weight:900;">{{ item.price }}</span></div>
-                <div class="row">
-                    <span class="{{ 'pos' if item.is_pos else 'neg' }}" style="font-weight:800;">{{ item.change }}%</span>
-                    {% if item.rvol %}<span class="rvol-tag">RVOL: {{ item.rvol }}</span>{% endif %}
-                </div>
-                <div class="range-bg"><div class="range-bar bg-{{ item.ampel }}" style="width:{{ item.range_pos }}%;"></div></div>
+        <div class="card border-{{ item.ampel }}">
+            <div class="row"><span style="font-weight:bold;">{{ item.name }}</span><span style="font-weight:900;">{{ item.price }}</span></div>
+            <div class="row" style="margin-top:5px;">
+                <span style="font-weight:800; color: {{ '#4caf50' if item.is_pos else '#ff5252' }};">{{ item.change }}%</span>
+                {% if item.rvol %}<span class="rvol-tag">RVOL: {{ item.rvol }}</span>{% endif %}
             </div>
-        </a>
+            <div class="range-bg"><div class="range-bar bg-{{ item.ampel }}" style="width:{{ item.range_pos }}%;"></div></div>
+        </div>
         {% endfor %}
 
         <script>
-            function analyzeMarkets() {
-                alert("Daten werden an Gemini gesendet... (Shortcut 2 Trigger)");
-                // Hier könnte ein Fetch-Call zu deiner Gemini-API-Route stehen
+            function copyKI() {
+                const text = `{{ ki_block }}`;
+                navigator.clipboard.writeText(text).then(() => {
+                    alert("KI-Daten im Speicher! Jetzt Gemini Shortcut 2 starten.");
+                });
             }
         </script>
     </body>
     </html>
     """
-    return render_template_string(html, data=data, vix=vix, gs_ratio=gs_ratio, now=datetime.datetime.now())
+    return render_template_string(html, data=data, vix=vix, gs_ratio=gs_ratio, ki_block=ki_block, now=datetime.datetime.now())
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
