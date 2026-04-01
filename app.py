@@ -5,7 +5,9 @@ import datetime
 
 app = Flask(__name__)
 
+# Ticker-Setup inklusive Bitcoin
 TICKERS = {
+    "Bitcoin": "BTC-USD",
     "Öl WTI": "CL=F", "Öl Brent": "BZ=F", "Gold": "GC=F",
     "Silber": "SI=F", "Kupfer": "HG=F", "S&P 500": "^GSPC",
     "DAX": "^GDAXI", "Nikkei 225": "^N225", "Hang Seng": "^HSI", "EUR/USD": "EURUSD=X"
@@ -19,27 +21,27 @@ def get_market_data():
     results = []
     prices = {}
     
+    # LIVE VIX (mit Fehlerbehandlung)
     try:
         vix_t = yf.Ticker("^VIX")
-        vix_h = vix_t.history(period="2d")
-        vix = float(vix_h['Close'].iloc[-1]) if not vix_h.empty else 25.0
+        vix = vix_t.fast_info['last_price']
     except: vix = 25.0
 
     for name, symbol in TICKERS.items():
         try:
             t = yf.Ticker(symbol)
-            h = t.history(period="35d")
-            if len(h) < 2: continue
+            # Wir nutzen t.info für die offiziellen Yahoo-Prozente
+            info = t.info
+            curr = info.get('regularMarketPrice') or t.fast_info['last_price']
+            change = info.get('regularMarketChangePercent', 0.0)
             
-            valid_h = h.dropna(subset=['Close'])
-            curr = float(valid_h['Close'].iloc[-1])
-            prev = float(valid_h['Close'].iloc[-2]) 
-            change = ((curr - prev) / prev) * 100
             prices[name] = curr
             
-            vols = valid_h['Volume'].replace(0, pd.NA).dropna()
+            # RVOL (für das Gschmäckle)
+            h_long = t.history(period="35d")
+            vols = h_long['Volume'].replace(0, pd.NA).dropna()
             rvol = None
-            if len(vols) > 5 and "EURUSD" not in symbol:
+            if len(vols) > 5 and "USD" not in symbol: # EURUSD/BTC oft kein RVOL-Schnitt sinnvoll
                 avg = vols.iloc[-22:-1].mean()
                 rvol = round(min(vols.iloc[-1] / avg, 10.0), 2) if avg > 0 else 1.0
 
@@ -47,14 +49,13 @@ def get_market_data():
             if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
             elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
 
-            # FIX: Hier war der Fehler (doppeltes high_7 entfernt)
-            low_7 = valid_h['Low'].tail(7).min()
-            high_7 = valid_h['High'].tail(7).max()
+            low_7 = h_long['Low'].tail(7).min()
+            high_7 = h_long['High'].tail(7).max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
             
             results.append({
                 'name': name, 'symbol': symbol, 'ampel': ampel,
-                'price': format_de(curr, 2 if "EURUSD" not in symbol else 4),
+                'price': format_de(curr, 2 if "USD" not in symbol and "EUR" not in symbol else (0 if "BTC" in symbol else 4)),
                 'change': format_de(change, 2), 'rvol': rvol, 'range_pos': round(range_pos, 0),
                 'is_pos': change >= 0
             })
@@ -79,6 +80,7 @@ def index():
         <style>
             body { background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
             .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; }
+            .header a { color: #fff; text-decoration: none; font-weight: bold; }
             .gemini-btn { background: linear-gradient(45deg, #f1c40f, #f39c12); color: #000; border: none; padding: 15px; border-radius: 12px; font-weight: 900; width: 100%; margin-bottom: 15px; cursor: pointer; font-size: 1.1em; }
             .card-link { text-decoration: none; color: inherit; display: block; }
             .card { background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; }
@@ -87,16 +89,17 @@ def index():
             .border-green { border-left-color: #4caf50 !important; }
             @keyframes blink { 0%, 100% { border-left-color: #ff5252; } 50% { border-left-color: #222; } }
             .row { display: flex; justify-content: space-between; align-items: center; }
-            .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #333; border-radius: 6px; color: #fff; border: 1px solid #555; }
+            .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #333; border-radius: 6px; color: #fff; }
             .range-bg { background: #1a1a1a; height: 8px; border-radius: 4px; margin: 12px 0; overflow: hidden; }
             .range-bar { height: 100%; border-radius: 4px; transition: width 0.5s; }
             .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
             .footer { text-align: center; font-size: 0.7em; color: #444; margin-top: 20px; font-weight: bold; }
+            .disclaimer { font-size: 0.6em; color: #333; text-align: center; margin-top: 15px; line-height: 1.4; padding: 0 10px; }
         </style>
     </head>
     <body>
         <div class="header">
-            <span>VIX: <b>{{ vix }}</b></span>
+            <a href="https://finance.yahoo.com/quote/%5EVIX" target="_blank">VIX: <b>{{ vix }}</b></a>
             <span>G/S: <b>{{ gs_ratio }}</b></span>
         </div>
         
@@ -116,12 +119,17 @@ def index():
         {% endfor %}
         
         <div class="footer">RADAR AKTIV ● {{ now.strftime('%H:%M:%S') }}</div>
+        
+        <div class="disclaimer">
+            HINWEIS: Alle Daten sind ohne Gewähr. Dies stellt keine Anlageberatung dar. <br>
+            Die Werte werden von Yahoo Finance bezogen und können zeitverzögert sein.
+        </div>
 
         <script>
             function copyKI() {
                 const text = `{{ ki_block }}`;
                 navigator.clipboard.writeText(text).then(() => {
-                    alert("KI-DATEN KOPIERT! Jetzt in Gemini einfügen.");
+                    alert("KI-DATEN KOPIERT!");
                 }).catch(err => {
                     alert("Kopierfehler.");
                 });
