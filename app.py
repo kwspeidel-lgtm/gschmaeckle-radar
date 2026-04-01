@@ -5,7 +5,6 @@ import datetime
 
 app = Flask(__name__)
 
-# Ticker-Setup inklusive Bitcoin
 TICKERS = {
     "Bitcoin": "BTC-USD",
     "Öl WTI": "CL=F", "Öl Brent": "BZ=F", "Gold": "GC=F",
@@ -21,7 +20,6 @@ def get_market_data():
     results = []
     prices = {}
     
-    # LIVE VIX (mit Fehlerbehandlung)
     try:
         vix_t = yf.Ticker("^VIX")
         vix = vix_t.fast_info['last_price']
@@ -30,27 +28,33 @@ def get_market_data():
     for name, symbol in TICKERS.items():
         try:
             t = yf.Ticker(symbol)
-            # Wir nutzen t.info für die offiziellen Yahoo-Prozente
-            info = t.info
+            info = t.info 
+            
+            # 1. Preis & Offizielle Yahoo-Veränderung
             curr = info.get('regularMarketPrice') or t.fast_info['last_price']
             change = info.get('regularMarketChangePercent', 0.0)
-            
             prices[name] = curr
             
-            # RVOL (für das Gschmäckle)
-            h_long = t.history(period="35d")
-            vols = h_long['Volume'].replace(0, pd.NA).dropna()
+            # 2. RVOL via Yahoo-Durchschnitt (Kein 10.0 Quatsch mehr)
             rvol = None
-            if len(vols) > 5 and "USD" not in symbol: # EURUSD/BTC oft kein RVOL-Schnitt sinnvoll
-                avg = vols.iloc[-22:-1].mean()
-                rvol = round(min(vols.iloc[-1] / avg, 10.0), 2) if avg > 0 else 1.0
+            if name not in ["Bitcoin", "EUR/USD"]:
+                current_vol = info.get('regularMarketVolume') or info.get('volume')
+                avg_vol = info.get('averageVolume10days') or info.get('averageVolume')
+                
+                if current_vol and avg_vol and avg_vol > 0:
+                    rvol = round(min(current_vol / avg_vol, 10.0), 2)
+                else:
+                    # Minimal-Fallback
+                    h = t.history(period="5d")
+                    if len(h) >= 2: rvol = 1.0
 
+            # 3. Ampel & Range
             ampel = "green"
             if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
             elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
 
-            low_7 = h_long['Low'].tail(7).min()
-            high_7 = h_long['High'].tail(7).max()
+            h_short = t.history(period="7d")
+            low_7, high_7 = h_short['Low'].min(), h_short['High'].max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
             
             results.append({
@@ -93,8 +97,8 @@ def index():
             .range-bg { background: #1a1a1a; height: 8px; border-radius: 4px; margin: 12px 0; overflow: hidden; }
             .range-bar { height: 100%; border-radius: 4px; transition: width 0.5s; }
             .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
-            .footer { text-align: center; font-size: 0.7em; color: #444; margin-top: 20px; font-weight: bold; }
-            .disclaimer { font-size: 0.6em; color: #333; text-align: center; margin-top: 15px; line-height: 1.4; padding: 0 10px; }
+            .footer { text-align: center; font-size: 0.8em; color: #555; margin-top: 20px; font-weight: bold; }
+            .disclaimer { font-size: 0.75em; color: #444; text-align: center; margin: 20px 10px; line-height: 1.5; border-top: 1px solid #222; padding-top: 15px; }
         </style>
     </head>
     <body>
@@ -121,8 +125,9 @@ def index():
         <div class="footer">RADAR AKTIV ● {{ now.strftime('%H:%M:%S') }}</div>
         
         <div class="disclaimer">
-            HINWEIS: Alle Daten sind ohne Gewähr. Dies stellt keine Anlageberatung dar. <br>
-            Die Werte werden von Yahoo Finance bezogen und können zeitverzögert sein.
+            <b>HINWEIS:</b> Alle Daten sind ohne Gewähr. Dies stellt keine Anlageberatung dar. 
+            Die Werte werden direkt von Yahoo Finance bezogen und können zeitverzögert sein.
+            Handeln auf eigene Gefahr.
         </div>
 
         <script>
@@ -131,7 +136,7 @@ def index():
                 navigator.clipboard.writeText(text).then(() => {
                     alert("KI-DATEN KOPIERT!");
                 }).catch(err => {
-                    alert("Kopierfehler.");
+                    alert("Fehler!");
                 });
             }
         </script>
