@@ -5,7 +5,6 @@ import datetime
 
 app = Flask(__name__)
 
-# DEINE TICKER-LISTE
 TICKERS = {
     "Öl (WTI)": "CL=F",
     "Gold": "GC=F",
@@ -20,114 +19,123 @@ TICKERS = {
 
 def get_market_data():
     results = []
-    
-    # 1. Gemeinsamer Abruf für Header-Daten (VIX, FX, Gold/Silber Ratio)
-    all_symbols = list(TICKERS.values()) + ["^VIX", "EURUSD=X"]
     try:
-        data_all = yf.download(all_symbols, period="2d", interval="1d", progress=False)
-        current_prices = data_all['Close'].iloc[-1]
-        
-        eur_usd = round(float(current_prices.get('EURUSD=X', 1.0820)), 4)
-        vix = round(float(current_prices.get('^VIX', 15.50)), 2)
-        
-        # Gold-Silber-Ratio Berechnung
-        gold_p = float(current_prices.get('GC=F', 0))
-        silver_p = float(current_prices.get('SI=F', 0))
-        gs_ratio = round(gold_p / silver_p, 2) if silver_p > 0 else "N/A"
-    except:
-        eur_usd, vix, gs_ratio = 1.0820, 15.50, "N/A"
+        fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
+        eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.08
+    except: eur_usd = 1.08
 
-    # 2. Details pro Ticker (RVOL, Change, News)
+    try:
+        vix_df = yf.download("^VIX", period="1d", interval="1m", progress=False)
+        vix = float(vix_df['Close'].iloc[-1]) if not vix_df.empty else 15.0
+    except: vix = 15.0
+
     for name, symbol in TICKERS.items():
         try:
-            t = yf.Ticker(symbol)
-            hist = t.history(period="7d")
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="10d") # Mehr Tage für stabilen RVOL
             if hist.empty: continue
 
-            price = hist['Close'].iloc[-1]
-            change = ((price - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+            current_price = float(hist['Close'].iloc[-1])
+            prev_close = float(hist['Close'].iloc[-2]) if len(hist) > 1 else current_price
+            change_pct = ((current_price - prev_close) / prev_close) * 100
             
-            avg_vol = hist['Volume'].iloc[:-1].mean()
-            rvol = round(hist['Volume'].iloc[-1] / avg_vol, 2) if avg_vol > 0 else 0
+            # KUGELSICHERER RVOL (speziell für Silber/Kupfer)
+            vols = hist['Volume'].replace(0, pd.NA).dropna()
+            if len(vols) > 1:
+                avg_vol = vols.iloc[:-1].mean()
+                curr_vol = vols.iloc[-1]
+                rvol = round(min(curr_vol / avg_vol, 15.0), 2) if avg_vol > 0 else 1.0
+            else: rvol = 1.0
 
-            low_7d, high_7d = hist['Low'].min(), hist['High'].max()
-            range_pos = ((price - low_7d) / (high_7d - low_7d)) * 100 if (high_7d - low_7d) > 0 else 50
+            # 7-TAGE-SPANNE
+            low_7d, high_7d = hist['Low'].tail(7).min(), hist['High'].tail(7).max()
+            range_pos = ((current_price - low_7d) / (high_7d - low_7d)) * 100 if (high_7d - low_7d) > 0 else 50
 
-            # News-Fix: Keine "None" Anzeigen
-            news_list = []
+            # NEWS LOGIK
+            news_items = []
             try:
-                for n in t.news[:3]:
-                    title = n.get('title')
-                    link = n.get('link')
-                    if title and link:
-                        news_list.append({'title': title, 'link': link})
+                for n in ticker.news[:3]:
+                    news_items.append({'title': n.get('title'), 'link': n.get('link')})
             except: pass
 
             results.append({
-                'name': name, 'price': round(price, 2), 'change': round(change, 2),
-                'rvol': rvol, 'range_pos': round(range_pos, 0), 'news': news_list
+                'name': name, 'symbol': symbol, 'price': round(current_price, 2),
+                'change': round(change_pct, 2), 'rvol': rvol, 
+                'range_pos': round(range_pos, 0), 'news': news_items
             })
         except: continue
-        
-    return results, vix, eur_usd, gs_ratio
+    return results, vix, eur_usd
 
 @app.route('/')
 def index():
-    data, vix, eur_usd, gs_ratio = get_market_data()
-    now = datetime.datetime.now()
-    
+    data, vix, eur_usd = get_market_data()
     html = """
     <!DOCTYPE html>
-    <html lang="de">
+    <html>
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Gschmäckle-Radar</title>
         <style>
-            body { background: #121212; color: #e0e0e0; font-family: sans-serif; margin: 5px; }
-            .header { display: flex; justify-content: space-between; padding: 12px; background: #1e1e1e; border-radius: 8px; margin-bottom: 10px; border-bottom: 2px solid #444; font-size: 0.9em; }
-            .card { background: #1e1e1e; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 4px solid #444; position: relative; }
-            .alarm { border-left-color: #ff5252; box-shadow: 0 0 15px rgba(255,82,82,0.2); animation: pulse 2s infinite; }
-            @keyframes pulse { 0% { border-left-width: 4px; } 50% { border-left-width: 8px; } 100% { border-left-width: 4px; } }
+            body { background: #121212; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
+            .header { display: flex; justify-content: space-between; padding: 15px; background: #1e1e1e; border-radius: 10px; margin-bottom: 10px; border: 1px solid #333; }
+            .card { background: #1e1e1e; padding: 15px; border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.3s; border: 1px solid #222; }
+            .alarm { border: 1px solid #ff5252; box-shadow: 0 0 10px rgba(255,82,82,0.2); animation: pulse 2s infinite; }
+            @keyframes pulse { 0% { border-color: #ff5252; } 50% { border-color: #333; } 100% { border-color: #ff5252; } }
+            .price-row { display: flex; justify-content: space-between; align-items: center; }
             .pos { color: #4caf50; } .neg { color: #ff5252; }
-            .range-bg { background: #333; height: 5px; border-radius: 3px; margin: 10px 0; overflow: hidden; }
-            .range-bar { background: #03a9f4; height: 100%; border-radius: 3px; }
-            .news-link { color: #81d4fa; text-decoration: none; display: block; font-size: 0.82em; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 2px solid #03a9f4; padding-left: 5px; }
-            .footer { text-align: center; font-size: 0.7em; color: #555; margin-top: 15px; }
+            .rvol-tag { font-size: 0.8em; padding: 2px 6px; background: #333; border-radius: 4px; }
+            .range-bg { background: #222; height: 4px; border-radius: 2px; margin: 10px 0; }
+            .range-bar { background: #81d4fa; height: 100%; border-radius: 2px; }
+            .news-container { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333; animation: slideDown 0.3s; }
+            @keyframes slideDown { from { opacity: 0; } to { opacity: 1; } }
+            .news-link { color: #bbdefb; text-decoration: none; display: block; margin-bottom: 8px; font-size: 0.9em; line-height: 1.3; }
+            .footer { font-size: 0.7em; color: #555; text-align: center; margin-top: 20px; }
         </style>
+        <script>
+            function toggleNews(id) {
+                var x = document.getElementById(id);
+                x.style.display = (x.style.display === "block") ? "none" : "block";
+            }
+        </script>
     </head>
     <body>
         <div class="header">
             <span>VIX: <b>{{ vix }}</b></span>
-            <span>G/S Ratio: <b style="color:#ffb74d">{{ gs_ratio }}</b></span>
-            <span>EUR/USD: <b>{{ eur_usd }}</b></span>
+            <span>€/$: <b>{{ eur_usd }}</b></span>
         </div>
 
         {% for item in data %}
-        <div class="card {{ 'alarm' if item.rvol > 3 else '' }}">
-            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size: 1.1em;">
-                <span>{{ item.name }}</span><span>{{ item.price }}</span>
+        <div class="card {{ 'alarm' if item.rvol > 3 else '' }}" onclick="toggleNews('news-{{ loop.index }}')">
+            <div class="price-row">
+                <span style="font-size: 1.1em; font-weight: bold;">{{ item.name }}</span>
+                <span style="font-size: 1.2em;">{{ item.price }}</span>
             </div>
-            <div style="display:flex; justify-content:space-between; font-size:0.95em; margin-top:5px;">
-                <span class="{{ 'pos' if item.change >= 0 else 'neg' }}">{{ '+' if item.change > 0 }}{{ item.change }}%</span>
-                <span>RVOL: <b style="{{ 'color:#ff5252; font-size:1.1em;' if item.rvol > 3 else '' }}">{{ item.rvol }}</b></span>
+            <div class="price-row" style="margin-top: 5px;">
+                <span class="{{ 'pos' if item.change >= 0 else 'neg' }}">{{ item.change }}%</span>
+                <span class="rvol-tag">RVOL: <b>{{ item.rvol }}</b></span>
             </div>
-            
             <div class="range-bg"><div class="range-bar" style="width: {{ item.range_pos }}%;"></div></div>
-
-            {% for n in item.news %}
-                <a class="news-link" href="{{ n.link }}" target="_blank">🗞️ {{ n.title }}</a>
-            {% endfor %}
+            
+            <div id="news-{{ loop.index }}" class="news-container">
+                {% if item.news %}
+                    {% for n in item.news %}
+                        <a class="news-link" href="{{ n.link }}" target="_blank">● {{ n.title }}</a>
+                    {% endfor %}
+                {% else %}
+                    <span style="font-size: 0.8em; color: #777;">Keine aktuellen News gefunden.</span>
+                {% endif %}
+            </div>
         </div>
         {% endfor %}
 
         <div class="footer">
-            Gschmäckle-Radar Live | Stand: {{ now.strftime('%H:%M:%S') }}
+            Privat-Radar ● Bettflucht Edition ● Keine Anlageberatung<br>
+            {{ now.strftime('%d.%m. %H:%M:%S') }}
         </div>
     </body>
     </html>
     """
-    return render_template_string(html, data=data, vix=vix, eur_usd=eur_usd, gs_ratio=gs_ratio, now=now)
+    return render_template_string(html, data=data, vix=round(vix, 2), eur_usd=round(eur_usd, 4), now=datetime.datetime.now())
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
