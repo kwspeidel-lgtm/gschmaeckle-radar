@@ -2,11 +2,10 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask, render_template_string
 import datetime
-import locale
+import re
 
 app = Flask(__name__)
 
-# Ticker-Liste erweitert um Brent
 TICKERS = {
     "Öl WTI": "CL=F",
     "Öl Brent": "BZ=F",
@@ -21,15 +20,13 @@ TICKERS = {
 }
 
 def format_de(value, decimals=2):
-    """Formatiert Zahlen auf Deutsch: 1.000,00"""
     try:
         return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return str(value)
+    except: return str(value)
 
 def get_market_data():
     results = []
-    # FX & VIX
+    # FX & VIX Abruf
     try:
         fx = yf.download("EURUSD=X", period="1d", interval="1m", progress=False)
         eur_usd = float(fx['Close'].iloc[-1]) if not fx.empty else 1.08
@@ -52,23 +49,24 @@ def get_market_data():
             
             # RVOL Check
             vols = hist['Volume'].replace(0, pd.NA).dropna()
-            if len(vols) > 1:
-                avg_vol = vols.iloc[:-1].mean()
-                curr_vol = vols.iloc[-1]
-                rvol = round(min(curr_vol / avg_vol, 15.0), 2) if avg_vol > 0 else 1.0
-            else: rvol = 1.0
+            avg_vol = vols.iloc[:-1].mean() if len(vols) > 1 else 1
+            rvol = round(min(vols.iloc[-1] / avg_vol, 15.0), 2) if avg_vol > 0 else 1.0
 
             # 7-Tage-Spanne
             low_7, high_7 = hist['Low'].tail(7).min(), hist['High'].tail(7).max()
             range_pos = ((current_price - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
 
-            # News Abruf verbessert
+            # STABILERER NEWS-ABRUF
             news_items = []
             try:
+                # Wir holen die News direkt und prüfen die Titel-Existenz
                 raw_news = ticker.news
                 if raw_news:
                     for n in raw_news[:3]:
-                        news_items.append({'title': n.get('title', 'Kein Titel'), 'link': n.get('link', '#')})
+                        title = n.get('title') or n.get('headline')
+                        link = n.get('link') or n.get('url')
+                        if title and title != "None":
+                            news_items.append({'title': title, 'link': link})
             except: pass
 
             results.append({
@@ -101,10 +99,10 @@ def index():
             .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
             .pos { color: #4caf50; } .neg { color: #ff5252; }
             .rvol-tag { font-size: 0.75em; padding: 3px 7px; background: #222; border-radius: 6px; color: #aaa; }
-            .range-bg { background: #222; height: 3px; border-radius: 2px; margin: 12px 0; overflow: hidden; }
+            .range-bg { background: #222; height: 4px; border-radius: 2px; margin: 12px 0; overflow: hidden; }
             .range-bar { background: #007aff; height: 100%; }
             .news-container { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #222; }
-            .news-link { color: #81d4fa; text-decoration: none; display: block; margin-bottom: 10px; font-size: 0.85em; line-height: 1.4; }
+            .news-link { color: #81d4fa; text-decoration: none; display: block; margin-bottom: 12px; font-size: 0.85em; line-height: 1.4; }
             .footer { font-size: 0.65em; color: #444; text-align: center; margin-top: 30px; line-height: 1.5; }
         </style>
         <script>
@@ -132,21 +130,18 @@ def index():
             </div>
             <div class="range-bg"><div class="range-bar" style="width: {{ item.range_pos }}%;"></div></div>
             
-            <div id="news-{{ loop.index }}" class="news-container">
+            <div id="news-{{ loop.index }}" class="news-container" style="display: {{ 'block' if item.news else 'none' }};">
                 {% if item.news %}
                     {% for n in item.news %}
                         <a class="news-link" href="{{ n.link }}" target="_blank">→ {{ n.title }}</a>
                     {% endfor %}
-                {% else %}
-                    <div style="font-size: 0.8em; color: #555;">Keine News verfügbar.</div>
                 {% endif %}
             </div>
         </div>
         {% endfor %}
 
         <div class="footer">
-            GESCHMÄCKLE-RADAR ● PRIVATE BEOBACHTUNG ● {{ now.strftime('%H:%M:%S') }}<br>
-            Daten von Yahoo Finance verzögert.
+            GESCHMÄCKLE-RADAR ● BEOBACHTUNG ● {{ now.strftime('%H:%M:%S') }}
         </div>
     </body>
     </html>
