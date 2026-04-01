@@ -19,7 +19,6 @@ def get_market_data():
     results = []
     prices = {}
     
-    # LIVE VIX via Ticker-Objekt
     try:
         vix_t = yf.Ticker("^VIX")
         vix_h = vix_t.history(period="2d")
@@ -32,27 +31,25 @@ def get_market_data():
             h = t.history(period="35d")
             if len(h) < 2: continue
             
-            # Validierung der Daten (wichtig für Brent!)
             valid_h = h.dropna(subset=['Close'])
             curr = float(valid_h['Close'].iloc[-1])
             prev = float(valid_h['Close'].iloc[-2]) 
             change = ((curr - prev) / prev) * 100
             prices[name] = curr
             
-            # RVOL Check
             vols = valid_h['Volume'].replace(0, pd.NA).dropna()
             rvol = None
             if len(vols) > 5 and "EURUSD" not in symbol:
                 avg = vols.iloc[-22:-1].mean()
                 rvol = round(min(vols.iloc[-1] / avg, 10.0), 2) if avg > 0 else 1.0
 
-            # Ampel-Logik
             ampel = "green"
             if (rvol and rvol > 2.5) or abs(change) > 2.1: ampel = "red"
             elif (rvol and rvol > 1.5) or abs(change) > 1.1: ampel = "yellow"
 
-            # 7-Tage-Spanne
-            low_7, high_7 = valid_h['Low'].tail(7).min(), high_7 = valid_h['High'].tail(7).max()
+            # FIX: Hier war der Fehler (doppeltes high_7 entfernt)
+            low_7 = valid_h['Low'].tail(7).min()
+            high_7 = valid_h['High'].tail(7).max()
             range_pos = ((curr - low_7) / (high_7 - low_7)) * 100 if (high_7 - low_7) > 0 else 50
             
             results.append({
@@ -69,7 +66,6 @@ def get_market_data():
 @app.route('/')
 def index():
     data, vix, gs_ratio = get_market_data()
-    # Kompakter KI-Block für den Button
     ki_block = f"RAW_DATA|VIX:{vix}|GS:{gs_ratio}"
     for d in data:
         rv = d['rvol'] if d['rvol'] else "0"
@@ -127,7 +123,7 @@ def index():
                 navigator.clipboard.writeText(text).then(() => {
                     alert("KI-DATEN KOPIERT! Jetzt in Gemini einfügen.");
                 }).catch(err => {
-                    alert("Kopierfehler. Prüfe Berechtigungen.");
+                    alert("Kopierfehler.");
                 });
             }
         </script>
