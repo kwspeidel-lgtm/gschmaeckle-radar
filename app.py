@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# PREIS-QUELLEN (Diese Kurse & % siehst du)
+# PREIS-QUELLEN (Live-Kurse & %-Änderung direkt von hier)
 TICKERS = {
     "Bitcoin": "BTC-USD", "Öl WTI": "CL=F", "Öl Brent": "BZ=F",
     "Gold": "GC=F", "Silber": "SI=F", "Kupfer": "HG=F",
@@ -15,7 +15,7 @@ TICKERS = {
     "Hang Seng": "^HSI", "EUR/USD": "EURUSD=X"
 }
 
-# VOLUMEN-QUELLEN (Nur für den VQ/Pace-Check im Hintergrund)
+# VOLUMEN-QUELLEN (Nur für den stabilen VQ/Pace im Hintergrund)
 VOL_SOURCES = {
     "Gold": "GLD", "Silber": "SLV", "Öl WTI": "USO", 
     "Öl Brent": "BNO", "Kupfer": "CPER"
@@ -39,19 +39,20 @@ def get_single_ticker_data(args):
     name, symbol = args
     pace_f = get_pace_factor()
     try:
-        # 1. PREIS & %-ÄNDERUNG DIREKT VOM HAUPT-TICKER (YAHOO)
         t = yf.Ticker(symbol)
         fi = t.fast_info
-        curr = fi['last_price']
-        prev = fi['previous_close']
         
-        # Fallback falls Yahoo hakt
+        # 1. LIVE-KURS & %-ÄNDERUNG DIREKT VON YAHOO (Keine Eigenberechnung mehr!)
+        curr = fi['last_price']
+        change = fi.get('regular_market_change_percent', 0.0)
+        
         if pd.isna(curr) or curr == 0:
             curr = t.history(period="1d")['Close'].iloc[-1]
+            # Fallback falls Yahoo Change fehlt
+            prev = fi['previous_close']
+            change = ((curr - prev) / prev) * 100 if prev else 0.0
             
-        change = ((curr - prev) / prev) * 100 if prev else 0.0
-        
-        # 2. VOLUMEN (VQ) VOM ETF (NUR ALS HINTERGRUND-CHECK)
+        # 2. VOLUMEN (VQ) VOM ETF
         vq = None
         vol_ticker_sym = VOL_SOURCES.get(name)
         if vol_ticker_sym:
@@ -63,12 +64,11 @@ def get_single_ticker_data(args):
                 if avg_v > 0:
                     vq = round(cur_v / (avg_v * pace_f), 2)
 
-        # Range-Balken (7 Tage)
+        # 7-Tage Range & Ampel
         h7 = t.history(period="7d")
         l7, hi7 = h7['Low'].min(), h7['High'].max()
         r_pos = ((curr - l7) / (hi7 - l7)) * 100 if (hi7 - l7) > 0 else 50
         
-        # Ampel-Farbe (Kurs entscheidet, VQ warnt bei Schwäche)
         ampel = "green" if change >= 0 else "red"
         if vq is not None and vq < 0.35:
             ampel = "yellow"
@@ -84,18 +84,18 @@ def get_single_ticker_data(args):
 
 @app.route('/')
 def index():
-    # VIX Header
+    # VIX Header mit Link & Ampel
     try:
         v_t = yf.Ticker("^VIX")
         vix_v = v_t.fast_info['last_price']
-        vix_p = ((vix_v - v_t.fast_info['previous_close']) / v_t.fast_info['previous_close']) * 100
+        vix_p = v_t.fast_info.get('regular_market_change_percent', 0.0)
         vix_ampel = "red" if vix_v > 26 else ("yellow" if vix_v > 21 else "green")
     except: vix_v, vix_p, vix_ampel = 20.0, 0.0, "green"
     
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = [r for r in list(ex.map(get_single_ticker_data, TICKERS.items())) if r is not None]
     
-    # G/S Ratio
+    # G/S Ratio Berechnung & Ampel
     g = next((r for r in results if r['name']=="Gold"), None)
     s = next((r for r in results if r['name']=="Silber"), None)
     gs_val = 0
@@ -106,7 +106,7 @@ def index():
     gs_c = "#ffd700" if (g['change_val'] if g else 0) > (s['change_val'] if s else 0) else "#c0c0c0"
     gs_ampel = "green" if (g['change_val'] if g else 0) > 0 else "red"
 
-    # KI-DATA Kopieren
+    # KI-Kopier-Daten für Shortcut 2
     ki_data = f"MARKET UPDATE {datetime.now().strftime('%d.%m.%Y %H:%M')}\\n"
     ki_data += f"VIX: {format_de(vix_v)} ({format_de(vix_p)}%)\\nGS Ratio: {format_de(gs_val)}\\n"
     for r in results:
@@ -134,7 +134,7 @@ def index():
         const text = "{ki_data}";
         navigator.clipboard.writeText(text.replace(/\\\\n/g, '\\n')).then(() => {{
             const btn = document.querySelector('.btn');
-            btn.innerText = "KOPIERT! ✅"; btn.style.background = "#4caf50";
+            btn.innerText = "WERTE KOPIERT! ✅"; btn.style.background = "#4caf50";
             setTimeout(() => {{ btn.innerText = "SHORTCUT 2 ANALYSE AKTIV 🚀"; btn.style.background = "linear-gradient(45deg, #f1c40f, #f39c12)"; }}, 2000);
         }});
     }}
@@ -153,7 +153,7 @@ def index():
         {f'<span style="font-size:0.85em; font-weight:800; padding:4px; background:#222; border-radius:6px;">VQ: {item["vq"]}</span>' if item['vq'] else ''}</div>
         <div class="range-bg"><div class="range-bar bg-{item['ampel']}" style="width:{item['range_pos']}%"></div></div></a></div>"""
     
-    html += f"""<div class="footer">BERLIN: {(datetime.now() + timedelta(hours=2)).strftime('%H:%M:%S')}<br><br><i>Keine Anlageberatung. Handel auf eigenes Risiko.</i></div></body></html>"""
+    html += f"""<div class="footer">BERLIN: {(datetime.now() + timedelta(hours=2)).strftime('%H:%M:%S')}<br><br><i>Keine Anlageberatung. Handel auf eigenes Risiko. Alle Daten ohne Gewähr.</i></div></body></html>"""
     return html
 
 if __name__ == '__main__':
