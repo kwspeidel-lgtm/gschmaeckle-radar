@@ -61,26 +61,26 @@ def index():
         results = [r for r in list(ex.map(get_single_ticker_data, TICKERS.items())) if r is not None]
     
     prices = {r['name']: r['price_val'] for r in results}
-    gs_val = prices.get("Gold", 0) / prices.get("Silber", 1) if "Gold" in prices and "Silber" in prices else 0
-    gs_color = "#ffd700" if results[3]['is_pos'] > results[4]['is_pos'] else "#c0c0c0" # Gold vs Silber
+    changes = {r['name']: r['change_val'] for r in results}
     
-    # KI-DATENBLOCK ERSTELLEN (Für die Zwischenablage)
+    gs_val = prices.get("Gold", 0) / prices.get("Silber", 1) if "Gold" in prices and "Silber" in prices else 0
+    # Gold/Silber Ratio Farbe (Gold stärker = Gold, Silber stärker = Silber/Grau)
+    gs_c = "#ffd700" if changes.get("Gold", 0) > changes.get("Silber", 0) else "#c0c0c0"
+    
+    # KI-DATENBLOCK ERSTELLEN (Für Zwischenablage)
     ki_data = f"MARKET UPDATE {datetime.now().strftime('%d.%m.%Y')}\\n"
-    ki_data += f"VIX: {format_de(vix_v)} ({format_de(vix_p)}%)\\n"
+    ki_data += f"VIX: {format_de(vix_v)} ({format_de(vix_p, 2)}%)\\n"
     ki_data += f"Gold/Silber Ratio: {format_de(gs_val)}\\n"
     for r in results:
-        ki_data += f"{r['name']}: {r['price']} ({r['change']}%)"
-        if r['rvol']: ki_data += f" RVOL: {r['rvol']}"
-        ki_data += "\\n"
+        ki_data += f"{r['name']}: {r['price']} ({r['change']}%)\\n"
 
     html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/png" sizes="512x512" href="{DINO_ICON_URL}"><link rel="apple-touch-icon" href="{DINO_ICON_URL}">
+    <link rel="icon" type="image/png" href="{DINO_ICON_URL}"><link rel="apple-touch-icon" href="{DINO_ICON_URL}">
     <title>Radar</title>
     <style>
     body {{ background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }}
     .header {{ display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; font-weight: bold; }}
     .btn {{ background: linear-gradient(45deg, #f1c40f, #f39c12); color: #000; border: none; padding: 15px; border-radius: 12px; font-weight: 900; width: 100%; margin-bottom: 15px; cursor: pointer; height: 55px; font-size: 1.1em; }}
-    .btn:active {{ transform: scale(0.98); opacity: 0.8; }}
     .card {{ background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; }}
     .border-red {{ border-left-color: #ff5252; }} .border-yellow {{ border-left-color: #ffd740; }} .border-green {{ border-left-color: #4caf50; }}
     .row {{ display: flex; justify-content: space-between; align-items: center; }}
@@ -96,11 +96,10 @@ def index():
         const text = "{ki_data}";
         navigator.clipboard.writeText(text.replace(/\\\\n/g, '\\n')).then(() => {{
             const btn = document.querySelector('.btn');
-            const originalText = btn.innerText;
             btn.innerText = "WERTE KOPIERT! ✅";
             btn.style.background = "#4caf50";
             setTimeout(() => {{
-                btn.innerText = originalText;
+                btn.innerText = "SHORTCUT 2 ANALYSE AKTIV 🚀";
                 btn.style.background = "linear-gradient(45deg, #f1c40f, #f39c12)";
             }}, 2000);
         }});
@@ -109,7 +108,7 @@ def index():
     </head><body>
     <div class="header">
         <span>VIX: <b>{format_de(vix_v)}</b> ({format_de(vix_p)}%)</span>
-        <span>G/S: <b style="color:{gs_c};">{format_de(gs_v)}</b></span>
+        <span>G/S: <b style="color:{gs_c};">{format_de(gs_val)}</b></span>
     </div>
     <button class="btn" onclick="copyData()">SHORTCUT 2 ANALYSE AKTIV 🚀</button>
     """
