@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import yfinance as yf
 from flask import Flask, render_template_string
-import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -22,20 +22,23 @@ def format_de(v, d=2):
     except:
         return str(v)
 
-def calc_rvol_safe(symbol):
+def calc_rvol_safe(symbol, name):
     """
-    Gehärteter RVOL: Nutzt 60-Tage Median & fängt API-Glitches ab.
-    Verhindert utopische Werte wie 119 durch Hard-Cap bei 15.0.
+    Insider-Scanner Logik:
+    - Kupfer wird ignoriert (Rauschen).
+    - Gold/Silber Hard-Cap bei 5.555 (Black Swan Signal).
+    - 60-Tage Median für maximale Stabilität.
     """
+    if name == "Kupfer":
+        return None
+        
     try:
         t = yf.Ticker(symbol)
-        # 60 Tage für maximale Stabilität (Quartals-Basis)
         hist = t.history(period="60d")
         if len(hist) < 30:
             return None
         
         vol_today = hist['Volume'].iloc[-1]
-        # Median filtert Ausreißer/Feiertage/Glitches komplett raus
         vol_median = hist['Volume'].iloc[:-1].median() 
         
         if vol_median == 0 or vol_median is None or pd.isna(vol_today):
@@ -43,10 +46,9 @@ def calc_rvol_safe(symbol):
             
         rvol_raw = vol_today / vol_median
         
-        # GLITCH-FILTER: Werte über 50 sind bei Yahoo oft Datenfehler.
-        # Wir deckeln auf 15.0 (Massiver Alert, aber optisch sauber & glaubwürdig).
-        if rvol_raw > 50:
-            return 15.0
+        # Hard-Cap Logik nach deiner Vorgabe
+        if name in ["Gold", "Silber"] and rvol_raw > 5.555:
+            return 5.555
             
         return round(rvol_raw, 2)
     except:
@@ -57,10 +59,9 @@ def get_market_data():
     prices = {}
     
     try:
-        # VIX Fix: Schnellerer Abruf über fast_info
         vix = yf.Ticker("^VIX").fast_info['last_price']
     except:
-        vix = 24.54
+        vix = 26.66 # Aktueller Wert aus deinem Screenshot
 
     for name, symbol in TICKERS.items():
         try:
@@ -72,11 +73,11 @@ def get_market_data():
             prices[name] = curr
 
             rvol = None
-            # RVOL nur für Commodities (Shortcut 1 & 2 Logik)
-            if name in ["Öl WTI", "Öl Brent", "Gold", "Silber", "Kupfer"]:
-                rvol = calc_rvol_safe(symbol)
+            # RVOL nur für Öl, Gold, Silber
+            if name in ["Öl WTI", "Öl Brent", "Gold", "Silber"]:
+                rvol = calc_rvol_safe(symbol, name)
 
-            # Insider-Logik & Ampel
+            # Shortcut 2 Alarm Logik
             is_alert = rvol >= 3.0 if rvol else False
             ampel = "neutral"
             if rvol:
@@ -87,32 +88,27 @@ def get_market_data():
                 elif rvol < 0.8: 
                     ampel = "yellow"
 
-            # 7-Tage Range Visualisierung
             h = t.history(period="7d")
             l7, h7 = h['Low'].min(), h['High'].max()
             range_pos = ((curr - l7) / (h7 - l7)) * 100 if (h7 - l7) > 0 else 50
 
             results.append({
-                'name': name, 
-                'symbol': symbol, 
-                'ampel': ampel, 
-                'alert': is_alert,
+                'name': name, 'symbol': symbol, 'ampel': ampel, 'alert': is_alert,
                 'price': format_de(curr, 2 if "USD" not in symbol and "EUR" not in symbol else (0 if "BTC" in symbol else 4)),
-                'change': format_de(change, 2), 
-                'rvol': rvol, 
-                'range_pos': round(range_pos, 0), 
-                'is_pos': change >= 0
+                'change': format_de(change, 2), 'rvol': rvol, 'range_pos': round(range_pos, 0), 'is_pos': change >= 0
             })
-        except: 
-            continue
+        except: continue
 
     gs = format_de(prices.get("Gold", 0) / prices.get("Silber", 1), 2) if "Gold" in prices and "Silber" in prices else "N/A"
-    return results, format_de(vix, 2), gs
+    
+    # Zeit-Synchronisation: Erzwinge Berlin-Zeit (CEST/UTC+2)
+    berlin_time = datetime.now() + timedelta(hours=2)
+    
+    return results, format_de(vix, 2), gs, berlin_time
 
 @app.route('/')
 def index():
-    data, vix, gs = get_market_data()
-    # KI-Block für den Chat-Check (Shortcut 2 Analyse)
+    data, vix, gs, now_time = get_market_data()
     ki_block = f"RAW_DATA|VIX:{vix}|GS:{gs}"
     for d in data:
         rv = d['rvol'] if d['rvol'] else "0"
@@ -129,18 +125,14 @@ def index():
     .insider-alert { border-left-color: #ff5252 !important; animation: pulse 1.5s infinite; background: #1a0505; }
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,82,82,0.4); } 70% { box-shadow: 0 0 0 12px rgba(255,82,82,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,82,0); } }
     
-    .border-red { border-left-color: #ff5252; } 
-    .border-yellow { border-left-color: #ffd740; } 
-    .border-green { border-left-color: #4caf50; }
-    
+    .border-red { border-left-color: #ff5252; } .border-yellow { border-left-color: #ffd740; } .border-green { border-left-color: #4caf50; }
     .row { display: flex; justify-content: space-between; align-items: center; }
     .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #222; border-radius: 6px; }
     .rvol-high { background: #e67e22; color: #fff; border: none; }
-    
     .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; }
     .range-bar { height: 100%; border-radius: 3px; }
     .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
-    .footer { text-align: center; font-size: 0.8em; color: #444; margin-top: 20px; }
+    .footer { text-align: center; font-size: 0.8em; color: #555; margin-top: 20px; font-weight: bold; }
     </style></head><body>
     <div class="header"><span>VIX: <b>{{ vix }}</b></span><span>G/S Ratio: <b>{{ gs }}</b></span></div>
     <button class="btn" onclick="copyKI()">SHORTCUT 2 ANALYSE KOPIEREN 🚀</button>
@@ -154,12 +146,11 @@ def index():
         <div class="range-bg"><div class="range-bar bg-{{ item.ampel }}" style="width:{{ item.range_pos }}%;"></div></div>
     </div>
     {% endfor %}
-    <div class="footer">RADAR AKTIV ● {{ now.strftime('%H:%M:%S') }}</div>
-    <script>function copyKI(){navigator.clipboard.writeText(`{{ ki_block }}`).then(()=>alert("DATEN FÜR CHECK KOPIERT!"));}</script>
+    <div class="footer">RADAR AKTIV ● BERLIN: {{ now.strftime('%H:%M:%S') }}</div>
+    <script>function copyKI(){navigator.clipboard.writeText(`{{ ki_block }}`).then(()=>alert("DATEN KOPIERT!"));}</script>
     </body></html>"""
-    return render_template_string(html, data=data, vix=vix, gs=gs, ki_block=ki_block, now=datetime.datetime.now())
+    return render_template_string(html, data=data, vix=vix, gs=gs, ki_block=ki_block, now=now_time)
 
 if __name__ == '__main__':
-    # Render nutzt den PORT environment variable
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
