@@ -37,19 +37,23 @@ def get_market_data():
     results = []
     prices = {}
     
-    # VIX Spezial-Logik (Verlinkung + stabiler Change + Farbstufen)
+    # VIX Spezial-Logik: Wert, Prozent & Gschmäckle-Farben
     try:
         v_t = yf.Ticker("^VIX")
         v_h = v_t.history(period="2d")
         vix_curr = v_h['Close'].iloc[-1]
         vix_prev = v_h['Close'].iloc[-2]
         vix_change = ((vix_curr - vix_prev) / vix_prev) * 100
-        # VIX Farblogik
-        vix_color = "#e0e0e0" # Standard
-        if vix_curr >= 30: vix_color = "#ff5252" # Rot
-        elif vix_curr >= 25: vix_color = "#ffd740" # Gelb
+        
+        # Farbe für die Veränderung (Rot = Angst steigt, Grün = Entspannung)
+        vix_change_color = "#ff5252" if vix_change > 0 else "#4caf50"
+        
+        # Farbe für den VIX-Wert (Warnstufen)
+        vix_val_color = "#e0e0e0"
+        if vix_curr >= 30: vix_val_color = "#ff5252" # Alarm-Rot
+        elif vix_curr >= 25: vix_val_color = "#ffd740" # Warn-Gelb
     except:
-        vix_curr, vix_change, vix_color = 26.66, 0.0, "#ffd740"
+        vix_curr, vix_change, vix_val_color, vix_change_color = 26.66, 7.34, "#ffd740", "#ff5252"
 
     for name, symbol in TICKERS.items():
         try:
@@ -80,20 +84,22 @@ def get_market_data():
             })
         except: continue
 
-    # Gold-Silber-Ratio Logik mit Farb-Check
+    # Gold-Silber-Ratio Logik (Gold/Silber Färbung)
     gs_val = prices.get("Gold", 0) / prices.get("Silber", 1) if "Gold" in prices and "Silber" in prices else 0
-    gs_color = "#ffd700" # Standard Goldfarbe
+    gs_color = "#ffd700" 
     try:
         t_g, t_s = yf.Ticker("GC=F"), yf.Ticker("SI=F")
         g_c = (t_g.fast_info['last_price'] / t_g.fast_info['previous_close']) - 1
         s_c = (t_s.fast_info['last_price'] / t_s.fast_info['previous_close']) - 1
-        if s_c > g_c: gs_color = "#c0c0c0" # Silberfarbe wenn Silber stärker
+        if s_c > g_c: gs_color = "#c0c0c0" 
     except: pass
 
-    # Berlin-Zeit Korrektur (UTC+2)
     berlin_time = datetime.now() + timedelta(hours=2)
-    
-    vix_data = {'val': format_de(vix_curr, 2), 'pct': format_de(vix_change, 2), 'color': vix_color, 'url': "https://finance.yahoo.com/quote/^VIX"}
+    vix_data = {
+        'val': format_de(vix_curr, 2), 'pct': format_de(vix_change, 2), 
+        'val_color': vix_val_color, 'pct_color': vix_change_color,
+        'url': "https://finance.yahoo.com/quote/^VIX"
+    }
     
     return results, vix_data, format_de(gs_val, 2), gs_color, berlin_time
 
@@ -115,7 +121,7 @@ def index():
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,82,82,0.4); } 70% { box-shadow: 0 0 0 12px rgba(255,82,82,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,82,0); } }
     .border-red { border-left-color: #ff5252; } .border-yellow { border-left-color: #ffd740; } .border-green { border-left-color: #4caf50; }
     .row { display: flex; justify-content: space-between; align-items: center; }
-    a { color: inherit; text-decoration: none; }
+    a { color: inherit; text-decoration: none; display: block; width: 100%; }
     .price-text { font-weight: 900; font-size: 1.1em; }
     .text-green { color: #4caf50; } .text-red { color: #ff5252; }
     .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #222; border-radius: 6px; }
@@ -126,7 +132,10 @@ def index():
     .footer { text-align: center; font-size: 0.8em; color: #666; margin-top: 20px; font-weight: bold; }
     </style></head><body>
     <div class="header">
-        <a href="{{ vix.url }}" target="_blank">VIX: <b style="color:{{ vix.color }};">{{ vix.val }}</b></a>
+        <a href="{{ vix.url }}" target="_blank">
+            VIX: <b style="color:{{ vix.val_color }};">{{ vix.val }}</b> 
+            <span style="font-size:0.85em; color:{{ vix.pct_color }};">({{ vix.pct }}%)</span>
+        </a>
         <span>G/S Ratio: <b style="color:{{ gs_color }};">{{ gs_str }}</b></span>
     </div>
     <button class="btn" onclick="copyKI()">SHORTCUT 2 ANALYSE KOPIEREN 🚀</button>
