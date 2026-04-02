@@ -15,10 +15,10 @@ TICKERS = {
 }
 
 def format_de(v, d=2):
-    if v is None: return "N/A"
+    if v is None or pd.isna(v): return "N/A"
     try:
         return f"{v:,.{d}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return str(v)
+    except: return "N/A"
 
 def calc_rvol_safe(symbol, name):
     if name == "Kupfer": return None
@@ -37,14 +37,11 @@ def get_market_data():
     results = []
     prices = {}
     
-    # TURBO-FETCH: Alle Ticker gleichzeitig laden (1m Intervall für Frische)
-    all_syms = list(TICKERS.values()) + ["^VIX"]
-    df = yf.download(all_syms, period="1d", interval="1m", progress=False)
-
-    # VIX Spezial-Logik
+    # VIX stabil abrufen
     try:
-        vix_curr = df['Close']['^VIX'].iloc[-1]
-        vix_prev = yf.Ticker("^VIX").fast_info['previous_close']
+        v_t = yf.Ticker("^VIX")
+        vix_curr = v_t.fast_info['last_price']
+        vix_prev = v_t.fast_info['previous_close']
         vix_change = ((vix_curr - vix_prev) / vix_prev) * 100
         vix_val_col = "#ff5252" if vix_curr >= 30 else ("#ffd740" if vix_curr >= 25 else "#e0e0e0")
         vix_pct_col = "#ff5252" if vix_change > 0 else "#4caf50"
@@ -53,23 +50,35 @@ def get_market_data():
 
     for name, symbol in TICKERS.items():
         try:
-            curr = df['Close'][symbol].iloc[-1]
-            prev = yf.Ticker(symbol).fast_info['previous_close']
-            change = ((curr - prev) / prev) * 100
+            t = yf.Ticker(symbol)
+            fi = t.fast_info
+            curr = fi['last_price']
+            prev = fi['previous_close']
+            
+            if pd.isna(curr) or curr == 0:
+                h = t.history(period="1d")
+                curr = h['Close'].iloc[-1]
+            
+            change = ((curr - prev) / prev) * 100 if prev else 0.0
             prices[name] = curr
             
-            rvol = calc_rvol_safe(symbol, name) if name in ["Öl WTI", "Öl Brent", "Gold", "Silber"] else None
+            rvol = calc_rvol_safe(symbol, name)
             is_alert = rvol >= 3.0 if rvol else False
-            ampel = "neutral"
+            
+            # Farbe für linken Rand UND unteren Balken
             if rvol:
                 if rvol >= 3.0: ampel = "red" if change < 0 else "green"
                 elif rvol >= 1.2: ampel = "green" if change > 0 else "red"
                 elif rvol < 0.8: ampel = "yellow"
+                else: ampel = "neutral"
+            else:
+                # Fallback für Kupfer, Indizes, Forex
+                ampel = "green" if change > 0 else "red"
 
-            # 7-Tage Range für den Balken
-            h_7d = yf.Ticker(symbol).history(period="7d")
-            l7, h7 = h_7d['Low'].min(), h_7d['High'].max()
-            range_pos = ((curr - l7) / (h7 - l7)) * 100 if (h7 - l7) > 0 else 50
+            # 7-Tage Range für ALLE
+            h7 = t.history(period="7d")
+            l7, hi7 = h7['Low'].min(), h7['High'].max()
+            range_pos = ((curr - l7) / (hi7 - l7)) * 100 if (hi7 - l7) > 0 else 50
 
             results.append({
                 'name': name, 'symbol': symbol, 'ampel': ampel, 'alert': is_alert,
@@ -79,7 +88,6 @@ def get_market_data():
             })
         except: continue
 
-    # Gold-Silber-Ratio Farbe (Gold wenn Gold stärker, Silber wenn Silber stärker)
     gs_val = prices.get("Gold", 0) / prices.get("Silber", 1) if "Gold" in prices and "Silber" in prices else 0
     gs_color = "#ffd700" 
     try:
@@ -106,10 +114,13 @@ def index():
     body { background: #000; color: #e0e0e0; font-family: sans-serif; margin: 10px; }
     .header { display: flex; justify-content: space-between; padding: 15px; background: #111; border-radius: 12px; margin-bottom: 12px; border: 1px solid #222; font-weight: bold; }
     .btn { background: linear-gradient(45deg, #f1c40f, #f39c12); color: #000; border: none; padding: 15px; border-radius: 12px; font-weight: 900; width: 100%; margin-bottom: 15px; cursor: pointer; height: 55px; font-size: 1.1em; }
-    .card { background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; }
+    .card { background: #111; padding: 15px; border-radius: 14px; margin-bottom: 10px; border-left: 7px solid #333; transition: 0.3s; }
     .insider-alert { border-left-color: #ff5252 !important; animation: pulse 1.5s infinite; background: #1a0505; }
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,82,82,0.4); } 70% { box-shadow: 0 0 0 12px rgba(255,82,82,0); } 100% { box-shadow: 0 0 0 0 rgba(255,82,82,0); } }
-    .border-red { border-left-color: #ff5252; } .border-yellow { border-left-color: #ffd740; } .border-green { border-left-color: #4caf50; }
+    .border-red { border-left-color: #ff5252 !important; } 
+    .border-yellow { border-left-color: #ffd740 !important; } 
+    .border-green { border-left-color: #4caf50 !important; }
+    .border-neutral { border-left-color: #444 !important; }
     .row { display: flex; justify-content: space-between; align-items: center; }
     a { color: inherit; text-decoration: none; display: block; width: 100%; }
     .price-text { font-weight: 900; font-size: 1.2em; text-align: right; }
@@ -118,7 +129,7 @@ def index():
     .rvol-high { background: #e67e22; color: #fff; }
     .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; }
     .range-bar { height: 100%; border-radius: 3px; }
-    .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
+    .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; } .bg-neutral { background-color: #444; }
     .footer { text-align: center; font-size: 0.8em; color: #555; margin-top: 20px; font-weight: bold; }
     </style></head><body>
     <div class="header">
