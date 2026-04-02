@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# PREIS-QUELLEN (Diese Kurse siehst du - Live & Präzise)
+# PREIS-QUELLEN (Diese Kurse & % siehst du)
 TICKERS = {
     "Bitcoin": "BTC-USD", "Öl WTI": "CL=F", "Öl Brent": "BZ=F",
     "Gold": "GC=F", "Silber": "SI=F", "Kupfer": "HG=F",
@@ -15,7 +15,7 @@ TICKERS = {
     "Hang Seng": "^HSI", "EUR/USD": "EURUSD=X"
 }
 
-# VOLUMEN-QUELLEN (ETFs für die saubere Ampel-Logik im Hintergrund)
+# VOLUMEN-QUELLEN (Nur für den VQ/Pace-Check im Hintergrund)
 VOL_SOURCES = {
     "Gold": "GLD", "Silber": "SLV", "Öl WTI": "USO", 
     "Öl Brent": "BNO", "Kupfer": "CPER"
@@ -39,18 +39,19 @@ def get_single_ticker_data(args):
     name, symbol = args
     pace_f = get_pace_factor()
     try:
-        # 1. PREIS & ÄNDERUNG IMMER VOM HAUPT-TICKER
+        # 1. PREIS & %-ÄNDERUNG DIREKT VOM HAUPT-TICKER (YAHOO)
         t = yf.Ticker(symbol)
         fi = t.fast_info
         curr = fi['last_price']
         prev = fi['previous_close']
         
+        # Fallback falls Yahoo hakt
         if pd.isna(curr) or curr == 0:
             curr = t.history(period="1d")['Close'].iloc[-1]
             
         change = ((curr - prev) / prev) * 100 if prev else 0.0
         
-        # 2. VOLUMEN (VQ) VOM ETF (FALLS VORHANDEN)
+        # 2. VOLUMEN (VQ) VOM ETF (NUR ALS HINTERGRUND-CHECK)
         vq = None
         vol_ticker_sym = VOL_SOURCES.get(name)
         if vol_ticker_sym:
@@ -62,16 +63,15 @@ def get_single_ticker_data(args):
                 if avg_v > 0:
                     vq = round(cur_v / (avg_v * pace_f), 2)
 
-        # 7-Tage Range für den Balken
+        # Range-Balken (7 Tage)
         h7 = t.history(period="7d")
         l7, hi7 = h7['Low'].min(), h7['High'].max()
         r_pos = ((curr - l7) / (hi7 - l7)) * 100 if (hi7 - l7) > 0 else 50
         
-        # Intelligente Ampel-Logik
+        # Ampel-Farbe (Kurs entscheidet, VQ warnt bei Schwäche)
         ampel = "green" if change >= 0 else "red"
-        if vq is not None:
-            if vq < 0.35: ampel = "yellow" # Schwaches Volumen = Gelbe Warnung
-            elif vq > 2.2: ampel = "green" if change >= 0 else "red"
+        if vq is not None and vq < 0.35:
+            ampel = "yellow"
 
         return {
             'name': name, 'symbol': symbol, 'ampel': ampel, 
@@ -95,7 +95,7 @@ def index():
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = [r for r in list(ex.map(get_single_ticker_data, TICKERS.items())) if r is not None]
     
-    # Gold/Silber Ratio
+    # G/S Ratio
     g = next((r for r in results if r['name']=="Gold"), None)
     s = next((r for r in results if r['name']=="Silber"), None)
     gs_val = 0
@@ -106,7 +106,7 @@ def index():
     gs_c = "#ffd700" if (g['change_val'] if g else 0) > (s['change_val'] if s else 0) else "#c0c0c0"
     gs_ampel = "green" if (g['change_val'] if g else 0) > 0 else "red"
 
-    # KI-Kopier-Daten
+    # KI-DATA Kopieren
     ki_data = f"MARKET UPDATE {datetime.now().strftime('%d.%m.%Y %H:%M')}\\n"
     ki_data += f"VIX: {format_de(vix_v)} ({format_de(vix_p)}%)\\nGS Ratio: {format_de(gs_val)}\\n"
     for r in results:
@@ -134,7 +134,7 @@ def index():
         const text = "{ki_data}";
         navigator.clipboard.writeText(text.replace(/\\\\n/g, '\\n')).then(() => {{
             const btn = document.querySelector('.btn');
-            btn.innerText = "WERTE KOPIERT! ✅"; btn.style.background = "#4caf50";
+            btn.innerText = "KOPIERT! ✅"; btn.style.background = "#4caf50";
             setTimeout(() => {{ btn.innerText = "SHORTCUT 2 ANALYSE AKTIV 🚀"; btn.style.background = "linear-gradient(45deg, #f1c40f, #f39c12)"; }}, 2000);
         }});
     }}
