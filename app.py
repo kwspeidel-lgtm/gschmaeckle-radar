@@ -37,31 +37,25 @@ def get_market_data():
     results = []
     prices = {}
     
-    # VIX Spezial-Logik: Wert, Prozent & Gschmäckle-Farben
+    # TURBO-FETCH: Alle Ticker gleichzeitig laden (1m Intervall für Frische)
+    all_syms = list(TICKERS.values()) + ["^VIX"]
+    df = yf.download(all_syms, period="1d", interval="1m", progress=False)
+
+    # VIX Spezial-Logik
     try:
-        v_t = yf.Ticker("^VIX")
-        v_h = v_t.history(period="2d")
-        vix_curr = v_h['Close'].iloc[-1]
-        vix_prev = v_h['Close'].iloc[-2]
+        vix_curr = df['Close']['^VIX'].iloc[-1]
+        vix_prev = yf.Ticker("^VIX").fast_info['previous_close']
         vix_change = ((vix_curr - vix_prev) / vix_prev) * 100
-        
-        # Farbe für die Veränderung (Rot = Angst steigt, Grün = Entspannung)
-        vix_change_color = "#ff5252" if vix_change > 0 else "#4caf50"
-        
-        # Farbe für den VIX-Wert (Warnstufen)
-        vix_val_color = "#e0e0e0"
-        if vix_curr >= 30: vix_val_color = "#ff5252" # Alarm-Rot
-        elif vix_curr >= 25: vix_val_color = "#ffd740" # Warn-Gelb
+        vix_val_col = "#ff5252" if vix_curr >= 30 else ("#ffd740" if vix_curr >= 25 else "#e0e0e0")
+        vix_pct_col = "#ff5252" if vix_change > 0 else "#4caf50"
     except:
-        vix_curr, vix_change, vix_val_color, vix_change_color = 26.66, 7.34, "#ffd740", "#ff5252"
+        vix_curr, vix_change, vix_val_col, vix_pct_col = 26.66, 0.0, "#ffd740", "#ff5252"
 
     for name, symbol in TICKERS.items():
         try:
-            t = yf.Ticker(symbol)
-            fi = t.fast_info
-            curr = fi['last_price']
-            prev = fi['previous_close'] if fi['previous_close'] and fi['previous_close'] > 0.01 else curr
-            change = ((curr - prev) / prev) * 100 if prev else 0.0
+            curr = df['Close'][symbol].iloc[-1]
+            prev = yf.Ticker(symbol).fast_info['previous_close']
+            change = ((curr - prev) / prev) * 100
             prices[name] = curr
             
             rvol = calc_rvol_safe(symbol, name) if name in ["Öl WTI", "Öl Brent", "Gold", "Silber"] else None
@@ -72,8 +66,9 @@ def get_market_data():
                 elif rvol >= 1.2: ampel = "green" if change > 0 else "red"
                 elif rvol < 0.8: ampel = "yellow"
 
-            h = t.history(period="7d")
-            l7, h7 = h['Low'].min(), h['High'].max()
+            # 7-Tage Range für den Balken
+            h_7d = yf.Ticker(symbol).history(period="7d")
+            l7, h7 = h_7d['Low'].min(), h_7d['High'].max()
             range_pos = ((curr - l7) / (h7 - l7)) * 100 if (h7 - l7) > 0 else 50
 
             results.append({
@@ -84,22 +79,17 @@ def get_market_data():
             })
         except: continue
 
-    # Gold-Silber-Ratio Logik (Gold/Silber Färbung)
+    # Gold-Silber-Ratio Farbe (Gold wenn Gold stärker, Silber wenn Silber stärker)
     gs_val = prices.get("Gold", 0) / prices.get("Silber", 1) if "Gold" in prices and "Silber" in prices else 0
     gs_color = "#ffd700" 
     try:
-        t_g, t_s = yf.Ticker("GC=F"), yf.Ticker("SI=F")
-        g_c = (t_g.fast_info['last_price'] / t_g.fast_info['previous_close']) - 1
-        s_c = (t_s.fast_info['last_price'] / t_s.fast_info['previous_close']) - 1
+        g_c = (prices["Gold"] / yf.Ticker("GC=F").fast_info['previous_close']) - 1
+        s_c = (prices["Silber"] / yf.Ticker("SI=F").fast_info['previous_close']) - 1
         if s_c > g_c: gs_color = "#c0c0c0" 
     except: pass
 
     berlin_time = datetime.now() + timedelta(hours=2)
-    vix_data = {
-        'val': format_de(vix_curr, 2), 'pct': format_de(vix_change, 2), 
-        'val_color': vix_val_color, 'pct_color': vix_change_color,
-        'url': "https://finance.yahoo.com/quote/^VIX"
-    }
+    vix_data = {'val': format_de(vix_curr, 2), 'pct': format_de(vix_change, 2), 'v_col': vix_val_col, 'p_col': vix_pct_col, 'url': "https://finance.yahoo.com/quote/^VIX"}
     
     return results, vix_data, format_de(gs_val, 2), gs_color, berlin_time
 
@@ -122,20 +112,17 @@ def index():
     .border-red { border-left-color: #ff5252; } .border-yellow { border-left-color: #ffd740; } .border-green { border-left-color: #4caf50; }
     .row { display: flex; justify-content: space-between; align-items: center; }
     a { color: inherit; text-decoration: none; display: block; width: 100%; }
-    .price-text { font-weight: 900; font-size: 1.1em; }
+    .price-text { font-weight: 900; font-size: 1.2em; text-align: right; }
     .text-green { color: #4caf50; } .text-red { color: #ff5252; }
     .rvol-tag { font-size: 0.85em; font-weight: 800; padding: 4px 8px; background: #222; border-radius: 6px; }
     .rvol-high { background: #e67e22; color: #fff; }
     .range-bg { background: #1a1a1a; height: 6px; border-radius: 3px; margin: 12px 0; }
     .range-bar { height: 100%; border-radius: 3px; }
     .bg-red { background-color: #ff5252; } .bg-yellow { background-color: #ffd740; } .bg-green { background-color: #4caf50; }
-    .footer { text-align: center; font-size: 0.8em; color: #666; margin-top: 20px; font-weight: bold; }
+    .footer { text-align: center; font-size: 0.8em; color: #555; margin-top: 20px; font-weight: bold; }
     </style></head><body>
     <div class="header">
-        <a href="{{ vix.url }}" target="_blank">
-            VIX: <b style="color:{{ vix.val_color }};">{{ vix.val }}</b> 
-            <span style="font-size:0.85em; color:{{ vix.pct_color }};">({{ vix.pct }}%)</span>
-        </a>
+        <a href="{{ vix.url }}" target="_blank">VIX: <b style="color:{{ vix.v_col }};">{{ vix.val }}</b> <span style="font-size:0.8em; color:{{ vix.p_col }};">({{ vix.pct }}%)</span></a>
         <span>G/S Ratio: <b style="color:{{ gs_color }};">{{ gs_str }}</b></span>
     </div>
     <button class="btn" onclick="copyKI()">SHORTCUT 2 ANALYSE KOPIEREN 🚀</button>
