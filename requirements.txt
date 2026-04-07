@@ -1,3 +1,6 @@
+flask
+gunicorn
 twelvedata[pandas]
 pandas
 requests
+
