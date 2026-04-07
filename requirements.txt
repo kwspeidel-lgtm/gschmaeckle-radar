@@ -1,4 +1,3 @@
-Flask>=2.3
+twelvedata[pandas]
 pandas
-yfinance>=0.2.38
-gunicorn
+requests
